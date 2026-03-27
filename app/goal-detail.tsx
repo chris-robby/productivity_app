@@ -53,7 +53,12 @@ export default function GoalDetailScreen() {
   function handleReeval() {
     if (!goal) return;
     useConversationStore.getState().reset();
-    useConversationStore.getState().setReeval(goal.id, goal.goal_text, goal.user_context ?? '');
+    useConversationStore.getState().setReeval(
+      goal.id,
+      goal.goal_text,
+      goal.user_context ?? '',
+      goal.initial_conversation ?? {}
+    );
     router.push('/conversation');
   }
 
@@ -182,12 +187,12 @@ export default function GoalDetailScreen() {
         .update({ status: 'abandoned' })
         .eq('id', goal.id);
 
-      // Save the reason into initial_context — fire and forget, non-critical
+      // Save the reason into initial_conversation — fire and forget, non-critical
       supabase
         .from('goals')
         .update({
-          initial_context: {
-            ...(goal.initial_context ?? {}),
+          initial_conversation: {
+            ...(goal.initial_conversation ?? {}),
             abandonment_reason: deleteReason.trim(),
           },
         })

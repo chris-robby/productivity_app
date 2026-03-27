@@ -6,6 +6,58 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+async function callGroq(prompt: string, maxTokens: number): Promise<string> {
+  const groqApiKey = Deno.env.get('GROQ_API_KEY')!;
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${groqApiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+      max_tokens: maxTokens,
+    }),
+  });
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    if (response.status === 429) throw new Error('RATE_LIMITED');
+    throw new Error(errData?.error?.message || 'AI is currently unavailable. Please try again later.');
+  }
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content ?? '';
+}
+
+async function callGemini(prompt: string, maxTokens: number): Promise<string> {
+  const geminiApiKey = Deno.env.get('GEMINI_API_KEY')!;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
+  const response = await fetch(geminiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: maxTokens,
+        thinkingConfig: { thinkingBudget: 0 },
+      }
+    })
+  });
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(errData?.error?.message || 'AI is currently unavailable. Please try again later.');
+  }
+  const geminiData = await response.json();
+  const candidate = geminiData.candidates?.[0];
+  const text = candidate?.content?.parts?.[0]?.text ?? '';
+  if (candidate?.finishReason === 'MAX_TOKENS' || !text) {
+    throw new Error('AI response was cut off. Please try again.');
+  }
+  return text;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -25,62 +77,62 @@ serve(async (req) => {
     );
     if (userError || !user) throw new Error('Unauthorized');
 
-    const { goalText, userContext } = await req.json();
+    const { goalText, userContext, previousAnswers } = await req.json();
 
-    const geminiApiKey = Deno.env.get('GEMINI_API_KEY')!;
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
+    // Format previous Q&A into readable lines (format: { q1, a1, q2, a2, ... })
+    const previousAnswersFormatted = (() => {
+      if (!previousAnswers || Object.keys(previousAnswers).length === 0) return null;
+      const pairs: string[] = [];
+      let i = 1;
+      while (previousAnswers[`q${i}`]) {
+        const q = previousAnswers[`q${i}`];
+        const a = previousAnswers[`a${i}`];
+        if (a) pairs.push(`- ${q} → ${a}`);
+        i++;
+      }
+      return pairs.length > 0 ? pairs.join('\n') : null;
+    })();
 
-    const prompt = `You are a goal achievement coach. A user wants to achieve this goal:
+    const prompt = `Someone wants to achieve this goal: "${goalText}"
+${userContext ? `\nAbout them: ${userContext}` : ''}
+${previousAnswersFormatted ? `\nALREADY KNOWN — do not ask about ANY of these again, ever:\n${previousAnswersFormatted}` : ''}
 
-"${goalText}"
-${userContext ? `\nAbout the user: ${userContext}\n` : ''}
 Do two things:
-1. Rewrite the goal to be clear, specific, and motivating. Fix vague or unclear wording (e.g. "get fat" → "Gain 10kg of healthy body weight", "get rich" → "Build a £50k annual side income"). Keep it concise — one sentence.
-2. Generate exactly 3 to 5 short clarifying questions to better understand their situation. Questions should uncover: starting point, available time per week, timeline, constraints, or previous attempts. Do not ask about things already covered in the "About the user" section above.
 
-Rules:
-- Each question must be one sentence, plain and direct
-- No bullet points, numbering, or formatting in the questions
-- Questions should feel like a friendly coach asking, not a form
+1. Rewrite the goal as one sentence that passes all three of these tests:
+   - SPECIFIC: what exactly will be achieved? (not "get fit" — what does fit mean for them?)
+   - MEASURABLE: a real number or clear outcome you can check (kg gained, km run, £ earned, words spoken)
+   - TIME-BOUND: includes a deadline or timeframe (use what they gave, or pick a realistic one)
+   Good examples: "get fit" → "Run a 5K in under 30 minutes by June", "gain muscle" → "Gain 8kg of lean muscle in 6 months training 4x per week", "learn Spanish" → "Hold a 10-minute conversation in Spanish within 6 months".
+   If you don't have enough info to add a number yet, use a sensible realistic default — you can always refine after the questions.
+
+2. Write ${previousAnswersFormatted ? '3 to 4' : '3 to 5'} questions to fill in gaps you genuinely don't know yet.
+${previousAnswersFormatted ? `
+STRICT RULES for re-evaluation questions:
+- The "ALREADY KNOWN" section above is off limits. Do not ask about anything in it.
+- Do not ask about body weight, height, fitness level, experience, or any physical stats if those are already answered.
+- Only ask about what has CHANGED or what is genuinely missing.
+- If you have enough info already, ask fewer questions (minimum 3).
+` : `
+Ask about: current starting point, hours available per week, timeline preference, any budget or equipment limits, past attempts.
+`}
+Question style: casual, one sentence, like a friend asking. No formal language. No words like "optimal", "utilise", "facilitate".
 
 Respond ONLY with valid JSON (no markdown, no code blocks):
 {
-  "redefinedGoal": "Clear, specific one-sentence version of their goal",
-  "questions": [
-    "Question one?",
-    "Question two?",
-    "Question three?"
-  ]
+  "redefinedGoal": "specific one-sentence goal",
+  "questions": ["Question one?", "Question two?", "Question three?"]
 }`;
 
-    const geminiResponse = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 1024,
-          thinkingConfig: { thinkingBudget: 0 },
-        }
-      })
-    });
-
-    if (!geminiResponse.ok) {
-      const errData = await geminiResponse.json().catch(() => ({}));
-      if (geminiResponse.status === 429) {
-        throw new Error('AI usage limit reached. Please wait a minute and try again.');
+    let aiText: string;
+    try {
+      aiText = await callGroq(prompt, 1024);
+    } catch (err) {
+      if (err.message === 'RATE_LIMITED') {
+        aiText = await callGemini(prompt, 1024);
+      } else {
+        throw err;
       }
-      throw new Error(errData?.error?.message || 'Failed to get AI response');
-    }
-
-    const geminiData = await geminiResponse.json();
-    const candidate = geminiData.candidates?.[0];
-    const aiText = candidate?.content?.parts?.[0]?.text ?? '';
-    const finishReason = candidate?.finishReason;
-
-    if (finishReason === 'MAX_TOKENS' || !aiText) {
-      throw new Error('AI response was cut off. Please try again.');
     }
 
     const cleanedText = aiText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();

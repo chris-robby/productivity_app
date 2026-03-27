@@ -41,6 +41,7 @@ export default function ConversationScreen() {
 
   const goalText = useConversationStore((state) => state.goalText);
   const userContext = useConversationStore((state) => state.userContext);
+  const previousAnswers = useConversationStore((state) => state.previousAnswers);
   const questions = useConversationStore((state) => state.questions);
   const answers = useConversationStore((state) => state.answers);
   const isReeval = useConversationStore((state) => state.isReeval);
@@ -68,7 +69,8 @@ export default function ConversationScreen() {
       const { redefinedGoal: refined, questions: fetched } = await fetchGoalQuestions(
         goalOverride ?? goalText,
         preContext,
-        userContext || undefined
+        userContext || undefined,
+        isReeval ? previousAnswers : undefined
       );
       setRedefinedGoal(refined);
       setEditText(refined);

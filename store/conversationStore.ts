@@ -3,6 +3,7 @@ import { create } from 'zustand';
 interface ConversationStore {
   goalText: string;
   userContext: string;
+  previousAnswers: Record<string, string>;
   questions: string[];
   answers: Record<number, string>;
   isReeval: boolean;
@@ -11,13 +12,14 @@ interface ConversationStore {
   setUserContext: (context: string) => void;
   setQuestions: (questions: string[]) => void;
   setAnswer: (index: number, answer: string) => void;
-  setReeval: (goalId: string, goalText: string, userContext?: string) => void;
+  setReeval: (goalId: string, goalText: string, userContext?: string, previousAnswers?: Record<string, string>) => void;
   reset: () => void;
 }
 
 export const useConversationStore = create<ConversationStore>((set) => ({
   goalText: '',
   userContext: '',
+  previousAnswers: {},
   questions: [],
   answers: {},
   isReeval: false,
@@ -28,8 +30,8 @@ export const useConversationStore = create<ConversationStore>((set) => ({
   setQuestions: (questions) => set({ questions }),
   setAnswer: (index, answer) =>
     set((state) => ({ answers: { ...state.answers, [index]: answer } })),
-  setReeval: (goalId, goalText, userContext = '') =>
-    set({ isReeval: true, reevalGoalId: goalId, goalText, userContext }),
+  setReeval: (goalId, goalText, userContext = '', previousAnswers = {}) =>
+    set({ isReeval: true, reevalGoalId: goalId, goalText, userContext, previousAnswers }),
   reset: () =>
-    set({ goalText: '', userContext: '', questions: [], answers: {}, isReeval: false, reevalGoalId: null }),
+    set({ goalText: '', userContext: '', previousAnswers: {}, questions: [], answers: {}, isReeval: false, reevalGoalId: null }),
 }));

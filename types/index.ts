@@ -8,7 +8,7 @@ export interface Goal {
   target_date: string;
   status: 'active' | 'completed' | 'abandoned';
   created_at: string;
-  initial_context: Record<string, string>;
+  initial_conversation: Record<string, string>;
   user_context?: string;
   total_tasks: number;
   completed_tasks: number;

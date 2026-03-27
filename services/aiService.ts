@@ -67,9 +67,10 @@ async function callEdgeFunction(name: string, body: object): Promise<any> {
 export async function fetchGoalQuestions(
   goalText: string,
   preContext?: string,
-  userContext?: string
+  userContext?: string,
+  previousAnswers?: Record<string, string>
 ): Promise<AIQuestionsResponse> {
-  return callEdgeFunction('ai-goal-setup', { goalText, preContext, userContext });
+  return callEdgeFunction('ai-goal-setup', { goalText, preContext, userContext, previousAnswers });
 }
 
 export async function generateRoadmap(goalData: {

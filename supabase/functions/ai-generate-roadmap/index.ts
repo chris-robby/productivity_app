@@ -6,6 +6,29 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+async function callGroq(prompt: string, maxTokens: number): Promise<string> {
+  const groqApiKey = Deno.env.get('GROQ_API_KEY')!;
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${groqApiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+      max_tokens: maxTokens,
+    }),
+  });
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(errData?.error?.message || 'AI is currently unavailable. Please try again later.');
+  }
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content ?? '';
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -33,27 +56,74 @@ serve(async (req) => {
     targetDate.setMonth(targetDate.getMonth() + (goalData.timelineMonths || 6));
     const target = targetDate.toISOString().split('T')[0];
 
-    const prompt = `You are creating a detailed, actionable roadmap for this goal:
+    // When regenerating, fall back to stored Q&A if caller passed empty context
+    let resolvedContext = goalData.context;
+    if (isReeval && goalData.goalId && (!resolvedContext || Object.keys(resolvedContext).length === 0)) {
+      const { data: existingGoal } = await supabase
+        .from('goals')
+        .select('initial_conversation')
+        .eq('id', goalData.goalId)
+        .single();
+      if (existingGoal?.initial_conversation) {
+        resolvedContext = existingGoal.initial_conversation;
+      }
+    }
+
+    // Context is stored as { q1: "question text", a1: "answer text", q2: ..., a2: ..., }
+    const contextFormatted = (() => {
+      const pairs: string[] = [];
+      let i = 1;
+      while (resolvedContext?.[`q${i}`]) {
+        const q = resolvedContext[`q${i}`];
+        const a = resolvedContext[`a${i}`];
+        if (a) pairs.push(`- Q: ${q}\n  A: ${a}`);
+        i++;
+      }
+      return pairs.join('\n') || 'No additional context provided';
+    })();
+
+    const prompt = `Create a roadmap for this goal:
 
 Goal: ${goalData.goal}
-Timeline: ${goalData.timelineMonths || 6} months
-Start Date: ${today}
-Target Date: ${target}
-${goalData.userContext ? `About the user: ${goalData.userContext}` : ''}
-Q&A Context: ${JSON.stringify(goalData.context)}
+Timeline: ${goalData.timelineMonths || 6} months (${today} → ${target})
+${goalData.userContext ? `About this person: ${goalData.userContext}` : ''}${goalData.preContext ? `\nWhat changed: ${goalData.preContext}` : ''}
 
-Create a comprehensive roadmap with:
-1. 2-3 major phases spanning the entire timeline (e.g., "Month 1-2: Foundation")
-2. Weekly milestones for each phase
-3. Daily actionable tasks for the FIRST 15 days only
+What they told us:
+${contextFormatted}
 
-Important:
-- Task titles must be short (5 words max), plain, and action-first. Use simple everyday words: "eat" not "consume", "read" not "review documentation", "walk" not "perform ambulation". Write like you're texting a friend, not writing a report.
-- Task descriptions should be 1-2 plain sentences explaining exactly what to do
-- Estimate realistic time for each task (in minutes)
-- Prioritize tasks (high/medium/low)
-- Make early tasks easier to build momentum
-- Each task should move toward the goal
+---
+
+LANGUAGE — follow strictly:
+- Write like you're texting a friend. Short sentences. Simple words.
+- NEVER use: "leverage", "implement", "utilise", "optimal", "actionable", "facilitate", "enhance", "cultivate", "embark", "focus on", "work on", "explore", "look into", "delve".
+
+DOMAIN EXPERTISE — you are an expert, act like one:
+- Muscle/fitness → real exercise names (bench press, squat, deadlift, pull-up, row), actual sets × reps, protein grams based on their body weight, rest days
+- Language learning → specific apps (Duolingo, Anki), grammar topics by name, exact vocab counts per day
+- Business/income → specific platforms, real tactics (cold outreach, SEO, paid ads), actual revenue milestones
+- Coding/tech → specific languages, tutorials by name, real projects to build
+- Other goals → same level of specificity — never give advice that could apply to any goal
+
+TASK TITLES — 6–10 words, action first:
+- BAD: "Exercise" / "Work on nutrition" / "Study language"
+- GOOD: "Do 3×8 bench press at 60% of max weight" / "Eat 160g protein across 4 meals today" / "Learn 20 Anki cards on present tense verbs"
+
+IMPLEMENTATION INTENTIONS (proven to double completion rates):
+- Start every task description with a habit anchor: "After [existing daily habit], [do the task]."
+- Pick anchors that fit the task naturally: gym/exercise → "After waking up" or "After work"; study/reading → "After dinner" or "During your lunch break"; tracking/logging → "Before bed".
+- Follow the anchor with one sentence on exactly what to do.
+- Example: "After breakfast, open Stronglifts and log today's session. Do 3 sets of 5 squats at your starting weight — this sets your baseline for progressive overload."
+
+PROGRESS PRINCIPLE (small wins drive long-term motivation):
+- Days 1, 2, and 3 must be "quick win" tasks: under 15 minutes, near-certain to succeed, but genuinely meaningful to the goal. The person must feel real forward progress from day one.
+- End every task description with one short sentence on why it matters: "This [gives you X / builds Y / sets up Z]."
+- Every task must directly use what they told you above. A task that could apply to any random person is wrong.
+- Respect their available time when setting estimatedMinutes.
+
+Build:
+1. 2–3 phases covering the full timeline
+2. Weekly focus for each phase
+3. Daily tasks for the first 15 days only
 
 Respond ONLY with valid JSON (no markdown, no code blocks):
 {
@@ -92,28 +162,31 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-          temperature: 0.7,
+          temperature: 0.3,
           maxOutputTokens: 16384,
           thinkingConfig: { thinkingBudget: 0 },
         }
       })
     });
 
+    let aiText: string;
+
     if (!geminiResponse.ok) {
       const errData = await geminiResponse.json().catch(() => ({}));
       if (geminiResponse.status === 429) {
-        throw new Error('AI usage limit reached. Please wait a minute and try again.');
+        aiText = await callGroq(prompt, 16384);
+      } else {
+        throw new Error(errData?.error?.message || 'Failed to generate roadmap');
       }
-      throw new Error(errData?.error?.message || 'Failed to generate roadmap');
-    }
+    } else {
+      const geminiData = await geminiResponse.json();
+      const candidate = geminiData.candidates?.[0];
+      aiText = candidate?.content?.parts?.[0]?.text ?? '';
+      const finishReason = candidate?.finishReason;
 
-    const geminiData = await geminiResponse.json();
-    const candidate = geminiData.candidates?.[0];
-    const aiText = candidate?.content?.parts?.[0]?.text ?? '';
-    const finishReason = candidate?.finishReason;
-
-    if (finishReason === 'MAX_TOKENS' || !aiText) {
-      throw new Error('Roadmap generation was cut off. Please try again.');
+      if (finishReason === 'MAX_TOKENS' || !aiText) {
+        throw new Error('Roadmap generation was cut off. Please try again.');
+      }
     }
 
     const cleanedText = aiText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();

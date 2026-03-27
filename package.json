@@ -9,7 +9,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "eslint .",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "deploy:functions": "supabase functions deploy ai-goal-setup --no-verify-jwt && supabase functions deploy ai-generate-roadmap --no-verify-jwt && supabase functions deploy ai-adjust-plan --no-verify-jwt"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

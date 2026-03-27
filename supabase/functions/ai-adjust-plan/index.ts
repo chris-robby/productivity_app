@@ -6,6 +6,29 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+async function callGroq(prompt: string, maxTokens: number): Promise<string> {
+  const groqApiKey = Deno.env.get('GROQ_API_KEY')!;
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${groqApiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+      max_tokens: maxTokens,
+    }),
+  });
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(errData?.error?.message || 'AI is currently unavailable. Please try again later.');
+  }
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content ?? '';
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -95,21 +118,24 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
       })
     });
 
+    let aiText: string;
+
     if (!geminiResponse.ok) {
       const errData = await geminiResponse.json().catch(() => ({}));
       if (geminiResponse.status === 429) {
-        throw new Error('AI is busy right now. Please wait a moment and try again.');
+        aiText = await callGroq(prompt, 1024);
+      } else {
+        throw new Error(errData?.error?.message || 'Failed to get AI adjustment');
       }
-      throw new Error(errData?.error?.message || 'Failed to get AI adjustment');
-    }
+    } else {
+      const geminiData = await geminiResponse.json();
+      const candidate = geminiData.candidates?.[0];
+      aiText = candidate?.content?.parts?.[0]?.text ?? '';
+      const finishReason = candidate?.finishReason;
 
-    const geminiData = await geminiResponse.json();
-    const candidate = geminiData.candidates?.[0];
-    const aiText = candidate?.content?.parts?.[0]?.text ?? '';
-    const finishReason = candidate?.finishReason;
-
-    if (finishReason === 'MAX_TOKENS' || !aiText) {
-      throw new Error('AI response was cut off. Please try again.');
+      if (finishReason === 'MAX_TOKENS' || !aiText) {
+        throw new Error('AI response was cut off. Please try again.');
+      }
     }
 
     const cleanedText = aiText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
