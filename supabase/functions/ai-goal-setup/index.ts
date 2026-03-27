@@ -25,7 +25,7 @@ serve(async (req) => {
     );
     if (userError || !user) throw new Error('Unauthorized');
 
-    const { goalText } = await req.json();
+    const { goalText, userContext } = await req.json();
 
     const geminiApiKey = Deno.env.get('GEMINI_API_KEY')!;
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
@@ -33,10 +33,10 @@ serve(async (req) => {
     const prompt = `You are a goal achievement coach. A user wants to achieve this goal:
 
 "${goalText}"
-
+${userContext ? `\nAbout the user: ${userContext}\n` : ''}
 Do two things:
 1. Rewrite the goal to be clear, specific, and motivating. Fix vague or unclear wording (e.g. "get fat" → "Gain 10kg of healthy body weight", "get rich" → "Build a £50k annual side income"). Keep it concise — one sentence.
-2. Generate exactly 3 to 5 short clarifying questions to better understand their situation. Questions should uncover: starting point, available time per week, timeline, constraints, or previous attempts.
+2. Generate exactly 3 to 5 short clarifying questions to better understand their situation. Questions should uncover: starting point, available time per week, timeline, constraints, or previous attempts. Do not ask about things already covered in the "About the user" section above.
 
 Rules:
 - Each question must be one sentence, plain and direct
@@ -69,7 +69,7 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
     if (!geminiResponse.ok) {
       const errData = await geminiResponse.json().catch(() => ({}));
       if (geminiResponse.status === 429) {
-        throw new Error('AI is busy right now. Please wait a moment and try again.');
+        throw new Error('AI usage limit reached. Please wait a minute and try again.');
       }
       throw new Error(errData?.error?.message || 'Failed to get AI response');
     }

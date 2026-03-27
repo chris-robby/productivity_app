@@ -1,0 +1,1 @@
+ALTER TABLE goals ADD COLUMN IF NOT EXISTS user_context TEXT;

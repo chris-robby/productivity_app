@@ -140,15 +140,22 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
 
     // Apply adjustments if recommended
     if (adjustment.adjustments.rescheduleTask && adjustment.adjustments.newDate) {
-      await supabase.from('daily_tasks').update({
+      // Insert a new task on the future date instead of moving the original,
+      // so the failed task stays visible on today in the journey
+      await supabase.from('daily_tasks').insert({
+        goal_id: task.goal_id,
+        task_title: task.task_title,
+        task_description: adjustment.adjustments.modifyTask || task.task_description,
         scheduled_date: adjustment.adjustments.newDate,
+        estimated_minutes: task.estimated_minutes,
+        priority: task.priority,
         was_rescheduled: true,
         original_date: task.scheduled_date,
         reschedule_reason: adjustment.adjustments.reasoning
-      }).eq('id', taskId);
+      });
     }
 
-    if (adjustment.adjustments.modifyTask) {
+    if (adjustment.adjustments.modifyTask && !adjustment.adjustments.rescheduleTask) {
       await supabase.from('daily_tasks').update({
         task_description: adjustment.adjustments.modifyTask
       }).eq('id', taskId);

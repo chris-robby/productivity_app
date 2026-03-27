@@ -48,7 +48,13 @@ async function callEdgeFunction(name: string, body: object): Promise<any> {
 
   if (!response.ok) {
     console.error(`[${name}] HTTP ${response.status}:`, text);
-    throw new Error(`${name} failed (${response.status}): ${text}`);
+    let message: string;
+    try {
+      message = JSON.parse(text)?.error || text;
+    } catch {
+      message = text;
+    }
+    throw new Error(message);
   }
 
   try {
@@ -60,15 +66,17 @@ async function callEdgeFunction(name: string, body: object): Promise<any> {
 
 export async function fetchGoalQuestions(
   goalText: string,
-  preContext?: string
+  preContext?: string,
+  userContext?: string
 ): Promise<AIQuestionsResponse> {
-  return callEdgeFunction('ai-goal-setup', { goalText, preContext });
+  return callEdgeFunction('ai-goal-setup', { goalText, preContext, userContext });
 }
 
 export async function generateRoadmap(goalData: {
   goal: string;
   timelineMonths: number;
   context: Record<string, string>;
+  userContext?: string;
 }): Promise<{ goalId: string; roadmap: AIRoadmapResponse }> {
   return callEdgeFunction('ai-generate-roadmap', { goalData });
 }
@@ -79,6 +87,7 @@ export async function regenerateRoadmap(goalData: {
   timelineMonths: number;
   context: Record<string, string>;
   preContext: string;
+  userContext?: string;
 }): Promise<{ goalId: string }> {
   return callEdgeFunction('ai-generate-roadmap', { goalData, isReeval: true });
 }

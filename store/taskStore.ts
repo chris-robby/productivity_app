@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { DailyTask, TaskStore } from '../types';
 import { supabase } from '../lib/supabase';
-import { format } from 'date-fns';
 
 export const useTaskStore = create<TaskStore>((set, get) => ({
   todaysTasks: [],
@@ -11,7 +10,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   loadTodaysTasks: async () => {
     try {
-      const today = format(new Date(), 'yyyy-MM-dd');
+      const today = new Date().toISOString().split('T')[0];
 
       // Scope tasks to active goals only — prevents tasks from abandoned/completed goals bleeding in
       const { data: goals } = await supabase
@@ -43,7 +42,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   loadUpcomingTasks: async (endDate: string) => {
     try {
-      const today = format(new Date(), 'yyyy-MM-dd');
+      const today = new Date().toISOString().split('T')[0];
 
       const { data: tasks, error } = await supabase
         .from('daily_tasks')

@@ -7,7 +7,7 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useGoalStore } from '../store/goalStore';
 import { format } from 'date-fns';
@@ -18,6 +18,7 @@ export default function RoadmapPreviewScreen() {
   const { goalId, reeval } = useLocalSearchParams<{ goalId: string; reeval?: string }>();
   const isReeval = reeval === 'true';
   const router = useRouter();
+  const navigation = useNavigation();
   const [loading, setLoading] = useState(true);
   const { colors } = useTheme();
   const styles = useMemo(() => getStyles(colors), [colors]);
@@ -34,9 +35,11 @@ export default function RoadmapPreviewScreen() {
 
   function handleStartTasks() {
     if (isReeval) {
-      router.replace('/goal-overview');
+      // Go back to goal-detail — conversation was replaced so it sits directly below
+      router.back();
     } else {
-      router.replace('/(tabs)');
+      // Reset the entire stack so goal-setup/conversation don't remain in history
+      navigation.reset({ index: 0, routes: [{ name: '(tabs)' }] });
     }
   }
 

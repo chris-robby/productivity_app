@@ -38,3 +38,9 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+
+# Claude
+.claude/
+
+# Supabase temp
+supabase/.temp/

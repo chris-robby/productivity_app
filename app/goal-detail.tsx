@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,9 +11,10 @@ import {
   Pressable,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useConversationStore } from '../store/conversationStore';
 import { regenerateRoadmap } from '../services/aiService';
@@ -36,6 +37,11 @@ export default function GoalDetailScreen() {
   const [editTimelineValue, setEditTimelineValue] = useState('');
   const [updatingPlan, setUpdatingPlan] = useState(false);
 
+  // Context editing
+  const [editingContext, setEditingContext] = useState(false);
+  const [contextValue, setContextValue] = useState('');
+  const [savingContext, setSavingContext] = useState(false);
+
   // Delete modal
   const [showDelete, setShowDelete] = useState(false);
   const [deleteReason, setDeleteReason] = useState('');
@@ -47,8 +53,46 @@ export default function GoalDetailScreen() {
   function handleReeval() {
     if (!goal) return;
     useConversationStore.getState().reset();
-    useConversationStore.getState().setReeval(goal.id, goal.goal_text);
+    useConversationStore.getState().setReeval(goal.id, goal.goal_text, goal.user_context ?? '');
     router.push('/conversation');
+  }
+
+  function startEditContext() {
+    if (!goal) return;
+    setContextValue(goal.user_context ?? '');
+    setEditingContext(true);
+  }
+
+  async function handleSaveContext() {
+    if (!goal) return;
+    setSavingContext(true);
+    try {
+      await supabase
+        .from('goals')
+        .update({ user_context: contextValue.trim() || null })
+        .eq('id', goal.id);
+      setGoal({ ...goal, user_context: contextValue.trim() || undefined });
+      setEditingContext(false);
+
+      if (contextValue.trim()) {
+        Alert.alert(
+          'Context saved',
+          'Re-evaluate your roadmap to apply this context to your plan.',
+          [
+            { text: 'Later', style: 'cancel' },
+            { text: 'Re-evaluate Now', onPress: () => {
+              useConversationStore.getState().reset();
+              useConversationStore.getState().setReeval(goal.id, goal.goal_text, contextValue.trim());
+              router.push('/conversation');
+            }},
+          ]
+        );
+      }
+    } catch (e) {
+      console.error('Failed to save context:', e);
+    } finally {
+      setSavingContext(false);
+    }
   }
 
   function startEditTitle() {
@@ -108,6 +152,7 @@ export default function GoalDetailScreen() {
         timelineMonths: newTimeline,
         context: {},
         preContext,
+        userContext: goal.user_context ?? '',
       });
 
       router.push({ pathname: '/roadmap-preview', params: { goalId, reeval: 'true' } });
@@ -156,9 +201,11 @@ export default function GoalDetailScreen() {
     }
   }
 
-  useEffect(() => {
-    if (id) loadDetail(id);
-  }, [id]);
+  useFocusEffect(
+    useCallback(() => {
+      if (id) loadDetail(id);
+    }, [id])
+  );
 
   async function loadDetail(goalId: string) {
     setLoading(true);
@@ -333,6 +380,59 @@ export default function GoalDetailScreen() {
             <Ionicons name="refresh-outline" size={18} color={colors.primary} />
             <Text style={styles.reevalText}>Re-evaluate with AI</Text>
           </TouchableOpacity>
+        )}
+
+        {/* Context card */}
+        {!editingField && (
+          <View style={styles.contextCard}>
+            <View style={styles.contextHeader}>
+              <Text style={styles.contextTitle}>About You</Text>
+              {!editingContext && (
+                <TouchableOpacity
+                  onPress={startEditContext}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="pencil-outline" size={16} color={colors.placeholder} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {editingContext ? (
+              <>
+                <TextInput
+                  style={styles.contextInput}
+                  value={contextValue}
+                  onChangeText={setContextValue}
+                  placeholder="e.g. I work full time with 1 hour free each evening. I'm a complete beginner with a limited budget..."
+                  placeholderTextColor={colors.placeholder}
+                  multiline
+                  autoFocus
+                  textAlignVertical="top"
+                />
+                <View style={styles.contextActions}>
+                  <TouchableOpacity
+                    style={styles.contextCancelBtn}
+                    onPress={() => setEditingContext(false)}
+                  >
+                    <Text style={styles.contextCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.contextSaveBtn, savingContext && { opacity: 0.5 }]}
+                    onPress={handleSaveContext}
+                    disabled={savingContext}
+                  >
+                    <Text style={styles.contextSaveText}>
+                      {savingContext ? 'Saving…' : 'Save'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <Text style={[styles.contextText, !goal.user_context && styles.contextPlaceholder]}>
+                {goal.user_context || 'No context added yet. Tap the pencil to add details about yourself — this helps the AI personalise your plan.'}
+              </Text>
+            )}
+          </View>
         )}
 
         {/* Phases */}
@@ -679,6 +779,77 @@ function getStyles(colors: ColorPalette) {
       fontSize: 15,
       fontWeight: '600',
       color: colors.primary,
+    },
+
+    // ── Context card ──────────────────────────────────────────────────────────
+    contextCard: {
+      backgroundColor: colors.surface,
+      marginHorizontal: 16,
+      marginBottom: 20,
+      padding: 18,
+      borderRadius: 14,
+    },
+    contextHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 10,
+    },
+    contextTitle: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: colors.textSecondary,
+      textTransform: 'uppercase',
+      letterSpacing: 0.8,
+    },
+    contextText: {
+      fontSize: 14,
+      color: colors.text,
+      lineHeight: 21,
+    },
+    contextPlaceholder: {
+      color: colors.placeholder,
+      fontStyle: 'italic',
+    },
+    contextInput: {
+      fontSize: 14,
+      color: colors.text,
+      backgroundColor: colors.inputBackground,
+      borderWidth: 1,
+      borderColor: colors.primary,
+      borderRadius: 10,
+      padding: 12,
+      minHeight: 100,
+      lineHeight: 21,
+      marginBottom: 12,
+    },
+    contextActions: {
+      flexDirection: 'row',
+      gap: 10,
+    },
+    contextCancelBtn: {
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+      borderRadius: 10,
+      borderWidth: 1.5,
+      borderColor: colors.border,
+    },
+    contextCancelText: {
+      fontSize: 14,
+      fontWeight: '600',
+      color: colors.textSecondary,
+    },
+    contextSaveBtn: {
+      flex: 1,
+      paddingVertical: 10,
+      borderRadius: 10,
+      backgroundColor: colors.primary,
+      alignItems: 'center',
+    },
+    contextSaveText: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: '#fff',
     },
 
     // ── Phases ────────────────────────────────────────────────────────────────

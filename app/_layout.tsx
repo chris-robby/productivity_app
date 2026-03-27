@@ -21,7 +21,8 @@ export default function RootLayout() {
       }
       if (session) {
         const settings = await getUserSettings();
-        setTheme(settings?.theme ?? 'dark');
+        const savedTheme = settings?.theme;
+        setTheme(savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'dark');
       }
     });
 
@@ -33,7 +34,8 @@ export default function RootLayout() {
         }
         if (session) {
           const settings = await getUserSettings();
-          setTheme(settings?.theme ?? 'dark');
+          const savedTheme = settings?.theme;
+          setTheme(savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'dark');
         }
       }
     );

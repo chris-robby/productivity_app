@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,16 +13,18 @@ import {
   Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useTaskStore } from '../../store/taskStore';
 import { useGoalStore } from '../../store/goalStore';
+import { useConversationStore } from '../../store/conversationStore';
 import { format } from 'date-fns';
 import { supabase } from '../../lib/supabase';
 import { useTheme } from '../../contexts/ThemeContext';
 import { ColorPalette } from '../../constants/colors';
 import { LeftSidebar } from '../../components/LeftSidebar';
 import { Goal } from '../../types';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 
 export default function TodayScreen() {
@@ -35,8 +37,11 @@ export default function TodayScreen() {
   const [reasonText, setReasonText] = useState('');
   const [submittingReason, setSubmittingReason] = useState(false);
   const [activeGoals, setActiveGoals] = useState<Goal[]>([]);
+  const [goalsLoaded, setGoalsLoaded] = useState(false);
+  const [goalInputText, setGoalInputText] = useState('');
 
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const styles = useMemo(() => getStyles(colors), [colors]);
 
   const todaysTasks = useTaskStore((state) => state.todaysTasks);
@@ -66,6 +71,14 @@ export default function TodayScreen() {
       setActiveGoals([]);
       useGoalStore.getState().setCurrentGoal(null);
     }
+    setGoalsLoaded(true);
+  }
+
+  function handleGoalSubmit() {
+    if (!goalInputText.trim()) return;
+    useConversationStore.getState().reset();
+    useConversationStore.getState().setGoalText(goalInputText.trim());
+    router.push('/conversation');
   }
 
   async function onRefresh() {
@@ -92,6 +105,54 @@ export default function TodayScreen() {
       setShowReasonSheet(false);
       setReasonTaskId(null);
     }
+  }
+
+  // Show goal setup form when no active goals
+  if (goalsLoaded && activeGoals.length === 0) {
+    return (
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.container}
+      >
+        <StatusBar style={colors.statusBar} />
+        <View style={[styles.goalSetupWrap, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 16 }]}>
+          {/* Hamburger — lets users with history access Journey & Goal Overview */}
+          <TouchableOpacity
+            onPress={() => setShowSidebar(true)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={styles.goalSetupMenuBtn}
+          >
+            <Ionicons name="menu-outline" size={26} color={colors.textSecondary} />
+          </TouchableOpacity>
+
+          <View style={styles.goalSetupTop}>
+            <Text style={styles.goalSetupHeading}>What is your goal?</Text>
+            <Text style={styles.goalSetupSub}>I'll build you a personalised roadmap to achieve it.</Text>
+          </View>
+
+          <View style={styles.goalInputRow}>
+            <TextInput
+              style={styles.goalInputField}
+              placeholder="Set your vision..."
+              placeholderTextColor={colors.placeholder}
+              value={goalInputText}
+              onChangeText={setGoalInputText}
+              multiline
+              textAlignVertical="top"
+              autoFocus
+            />
+            <TouchableOpacity
+              style={[styles.goalSendBtn, !goalInputText.trim() && styles.goalSendBtnDisabled]}
+              onPress={handleGoalSubmit}
+              disabled={!goalInputText.trim()}
+            >
+              <MaterialCommunityIcons name="run" size={22} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        </View>
+        <LeftSidebar visible={showSidebar} onClose={() => setShowSidebar(false)} />
+      </KeyboardAvoidingView>
+    );
   }
 
   // Priority + estimated_minutes tiebreak; done/failed sink to bottom
@@ -318,6 +379,63 @@ function getStyles(colors: ColorPalette) {
     container: {
       flex: 1,
       backgroundColor: colors.background,
+    },
+
+    // ── Goal setup (no active goal) ──────────────────────────────────────────
+    goalSetupWrap: {
+      flex: 1,
+      paddingHorizontal: 24,
+      justifyContent: 'space-between',
+    },
+    goalSetupTop: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingBottom: 60,
+    },
+    goalSetupHeading: {
+      fontSize: 28,
+      fontWeight: '700',
+      color: colors.text,
+      textAlign: 'center',
+      marginBottom: 12,
+    },
+    goalSetupSub: {
+      fontSize: 15,
+      color: colors.textSecondary,
+      textAlign: 'center',
+      lineHeight: 22,
+    },
+    goalInputRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-end',
+      gap: 10,
+      backgroundColor: colors.surface,
+      borderRadius: 16,
+      borderWidth: 1.5,
+      borderColor: colors.border,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+    },
+    goalInputField: {
+      flex: 1,
+      fontSize: 15,
+      color: colors.text,
+      maxHeight: 120,
+      lineHeight: 22,
+      paddingVertical: 4,
+    },
+    goalSendBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      backgroundColor: colors.primary,
+      justifyContent: 'center',
+      alignItems: 'center',
+      marginBottom: 2,
+    },
+    goalSendBtnDisabled: {
+      opacity: 0.35,
     },
 
     // ── Header ──────────────────────────────────────────────────────────────

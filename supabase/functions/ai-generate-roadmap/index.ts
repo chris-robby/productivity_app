@@ -39,12 +39,13 @@ Goal: ${goalData.goal}
 Timeline: ${goalData.timelineMonths || 6} months
 Start Date: ${today}
 Target Date: ${target}
-User Context: ${JSON.stringify(goalData.context)}
+${goalData.userContext ? `About the user: ${goalData.userContext}` : ''}
+Q&A Context: ${JSON.stringify(goalData.context)}
 
 Create a comprehensive roadmap with:
 1. 2-3 major phases spanning the entire timeline (e.g., "Month 1-2: Foundation")
 2. Weekly milestones for each phase
-3. Daily actionable tasks for the FIRST 7 days only
+3. Daily actionable tasks for the FIRST 15 days only
 
 Important:
 - Task titles must be short (5 words max), plain, and action-first. Use simple everyday words: "eat" not "consume", "read" not "review documentation", "walk" not "perform ambulation". Write like you're texting a friend, not writing a report.
@@ -92,7 +93,7 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.7,
-          maxOutputTokens: 8192,
+          maxOutputTokens: 16384,
           thinkingConfig: { thinkingBudget: 0 },
         }
       })
@@ -101,7 +102,7 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
     if (!geminiResponse.ok) {
       const errData = await geminiResponse.json().catch(() => ({}));
       if (geminiResponse.status === 429) {
-        throw new Error('AI is busy right now. Please wait a moment and try again.');
+        throw new Error('AI usage limit reached. Please wait a minute and try again.');
       }
       throw new Error(errData?.error?.message || 'Failed to generate roadmap');
     }
@@ -135,6 +136,7 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
           goal_text: goalData.goal,
           timeline_months: goalData.timelineMonths || 6,
           target_date: target,
+          ...(goalData.userContext !== undefined && { user_context: goalData.userContext }),
         })
         .eq('id', goalData.goalId);
       if (updateError) throw updateError;
@@ -157,7 +159,8 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
         timeline_months: goalData.timelineMonths || 6,
         target_date: target,
         status: 'active',
-        initial_conversation: goalData.context
+        initial_conversation: goalData.context,
+        user_context: goalData.userContext || null,
       }).select().single();
 
       if (goalError) throw goalError;

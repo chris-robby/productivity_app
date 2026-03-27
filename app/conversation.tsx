@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useConversationStore } from '../store/conversationStore';
 import { fetchGoalQuestions, generateRoadmap, regenerateRoadmap } from '../services/aiService';
 import { supabase } from '../lib/supabase';
@@ -35,9 +36,11 @@ export default function ConversationScreen() {
 
   const router = useRouter();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const styles = useMemo(() => getStyles(colors), [colors]);
 
   const goalText = useConversationStore((state) => state.goalText);
+  const userContext = useConversationStore((state) => state.userContext);
   const questions = useConversationStore((state) => state.questions);
   const answers = useConversationStore((state) => state.answers);
   const isReeval = useConversationStore((state) => state.isReeval);
@@ -64,7 +67,8 @@ export default function ConversationScreen() {
     try {
       const { redefinedGoal: refined, questions: fetched } = await fetchGoalQuestions(
         goalOverride ?? goalText,
-        preContext
+        preContext,
+        userContext || undefined
       );
       setRedefinedGoal(refined);
       setEditText(refined);
@@ -161,6 +165,7 @@ export default function ConversationScreen() {
           timelineMonths,
           context,
           preContext: combined,
+          userContext,
         });
         // Always write the updated goal text back — backend may not do this
         await supabase
@@ -176,7 +181,7 @@ export default function ConversationScreen() {
         }
         router.replace({ pathname: '/roadmap-preview', params: { goalId, reeval: 'true' } });
       } else {
-        const { goalId } = await generateRoadmap({ goal: activeGoal, timelineMonths, context });
+        const { goalId } = await generateRoadmap({ goal: activeGoal, timelineMonths, context, userContext });
         router.replace({ pathname: '/roadmap-preview', params: { goalId } });
       }
     } catch (error: any) {
@@ -206,7 +211,7 @@ export default function ConversationScreen() {
         <StatusBar style={colors.statusBar} />
         <ScrollView
           style={styles.scrollContent}
-          contentContainerStyle={styles.scrollInner}
+          contentContainerStyle={[styles.scrollInner, { paddingTop: insets.top + 16 }]}
           keyboardShouldPersistTaps="handled"
         >
           <Text style={styles.primerLabel}>CURRENT GOAL</Text>
@@ -236,7 +241,7 @@ export default function ConversationScreen() {
           />
         </ScrollView>
 
-        <View style={styles.footer}>
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
           <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
             <Text style={styles.backButtonText}>← Back</Text>
           </TouchableOpacity>
@@ -261,7 +266,7 @@ export default function ConversationScreen() {
       >
         <StatusBar style={colors.statusBar} />
 
-        <View style={styles.content}>
+        <View style={[styles.content, { paddingTop: insets.top + 16 }]}>
           <Text style={styles.confirmLabel}>
             {isReeval ? 'We understood the update as' : 'We understood your goal as'}
           </Text>
@@ -287,7 +292,7 @@ export default function ConversationScreen() {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.footer}>
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
           <TouchableOpacity style={styles.backButton} onPress={handleBack}>
             <Text style={styles.backButtonText}>← Back</Text>
           </TouchableOpacity>
@@ -333,7 +338,7 @@ export default function ConversationScreen() {
     >
       <StatusBar style={colors.statusBar} />
 
-      <View style={styles.progressContainer}>
+      <View style={[styles.progressContainer, { paddingTop: insets.top + 16 }]}>
         {questions.map((_, i) => (
           <View
             key={i}
@@ -387,7 +392,6 @@ function getStyles(colors: ColorPalette) {
     container: {
       flex: 1,
       backgroundColor: colors.background,
-      paddingTop: 60,
     },
     centered: {
       flex: 1,
@@ -408,6 +412,7 @@ function getStyles(colors: ColorPalette) {
     scrollInner: {
       paddingHorizontal: 24,
       paddingBottom: 24,
+      paddingTop: 16,
     },
     primerLabel: {
       fontSize: 11,
@@ -451,7 +456,8 @@ function getStyles(colors: ColorPalette) {
       justifyContent: 'center',
       gap: 8,
       paddingHorizontal: 24,
-      marginBottom: 48,
+      paddingTop: 16,
+      marginBottom: 32,
     },
     dot: {
       width: 8,

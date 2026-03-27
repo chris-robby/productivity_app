@@ -9,6 +9,7 @@ export interface Goal {
   status: 'active' | 'completed' | 'abandoned';
   created_at: string;
   initial_context: Record<string, string>;
+  user_context?: string;
   total_tasks: number;
   completed_tasks: number;
   current_completion_rate: number;
