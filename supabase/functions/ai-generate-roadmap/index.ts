@@ -29,6 +29,40 @@ async function callGroq(prompt: string, maxTokens: number): Promise<string> {
   return data.choices?.[0]?.message?.content ?? '';
 }
 
+async function callGemini(
+  prompt: string,
+  maxTokens: number,
+  model: string,
+  thinkingBudget: number
+): Promise<string> {
+  const geminiApiKey = Deno.env.get('GEMINI_API_KEY')!;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: maxTokens,
+        thinkingConfig: { thinkingBudget },
+      }
+    })
+  });
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    if (response.status === 429) throw new Error('RATE_LIMITED');
+    throw new Error(errData?.error?.message || `Gemini error ${response.status}`);
+  }
+  const data = await response.json();
+  const candidate = data.candidates?.[0];
+  const text = candidate?.content?.parts?.[0]?.text ?? '';
+  if (candidate?.finishReason === 'MAX_TOKENS' || !text) {
+    throw new Error('AI response was cut off. Please try again.');
+  }
+  return text;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -38,18 +72,16 @@ serve(async (req) => {
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) throw new Error('No authorization header');
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
 
     const token = authHeader.replace('Bearer ', '');
     const { data: { user }, error: userError } = await supabase.auth.getUser(token);
     if (userError || !user) throw new Error('Unauthorized');
 
     const { goalData, isReeval } = await req.json();
-
-    const geminiApiKey = Deno.env.get('GEMINI_API_KEY')!;
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
 
     const today = new Date().toISOString().split('T')[0];
     const targetDate = new Date();
@@ -69,27 +101,69 @@ serve(async (req) => {
       }
     }
 
-    // Context is stored as { q1: "question text", a1: "answer text", q2: ..., a2: ..., }
+    // Context is stored as { q1: "question text", a1: "answer text", q2: ..., a2: ... }
     const contextFormatted = (() => {
       const pairs: string[] = [];
       let i = 1;
       while (resolvedContext?.[`q${i}`]) {
         const q = resolvedContext[`q${i}`];
         const a = resolvedContext[`a${i}`];
-        if (a) pairs.push(`- Q: ${q}\n  A: ${a}`);
+        if (a) pairs.push(`• ${q} → ${a}`);
         i++;
       }
       return pairs.join('\n') || 'No additional context provided';
     })();
 
+    const userProfileSection = [
+      goalData.userContext ? `Background: ${goalData.userContext}` : '',
+      goalData.preContext ? `What changed: ${goalData.preContext}` : '',
+    ].filter(Boolean).join('\n');
+
+    // Re-evaluation uses Gemini 2.5 Pro + deep thinking (8192 token budget)
+    // Initial generation uses Gemini 2.5 Flash (fast, free tier)
+    const useDeepThink = Boolean(isReeval);
+    const primaryModel = useDeepThink ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+    const thinkingBudget = useDeepThink ? 8192 : 0;
+
+    // ── Step 1: Strategy analysis (re-evaluation only) ────────────────────────
+    // The model reasons through the person's situation in plain text before
+    // generating the structured plan — this dramatically improves plan quality.
+    let strategyAnalysis = '';
+    if (useDeepThink) {
+      const analysisPrompt = `You are an expert planner. A person is re-evaluating their goal. Before building their new roadmap, think through their situation carefully.
+
+Goal: ${goalData.goal}
+Timeline: ${goalData.timelineMonths || 6} months (${today} → ${target})
+${userProfileSection ? `\n${userProfileSection}\n` : ''}
+What they told us:
+${contextFormatted}
+
+Answer these four questions in plain text:
+1. What is the single biggest challenge or risk for this specific person — not a generic one, but based on what they told us?
+2. What must happen first and why — what's the correct order for things to build on each other?
+3. What does their first week need to look like to create real momentum without overwhelming them?
+4. Which of their constraints (time, budget, equipment, experience level) will shape every task the most?
+
+Write 4 short paragraphs, one per question. Be specific. No generic advice.`;
+
+      try {
+        strategyAnalysis = await callGemini(analysisPrompt, 2048, primaryModel, thinkingBudget);
+      } catch {
+        // Non-critical — if Pro is unavailable or fails, continue without the analysis step
+        strategyAnalysis = '';
+      }
+    }
+
+    // ── Step 2: Roadmap generation ────────────────────────────────────────────
     const prompt = `Create a roadmap for this goal:
 
 Goal: ${goalData.goal}
 Timeline: ${goalData.timelineMonths || 6} months (${today} → ${target})
-${goalData.userContext ? `About this person: ${goalData.userContext}` : ''}${goalData.preContext ? `\nWhat changed: ${goalData.preContext}` : ''}
-
+${userProfileSection ? `\n${userProfileSection}\n` : ''}
 What they told us:
 ${contextFormatted}
+${strategyAnalysis ? `\nPlanning analysis (use this to shape every decision):\n${strategyAnalysis}\n` : ''}
+PERSONALISATION RULE: Every task must be traceable to a specific answer or constraint above. If a task could apply to a stranger with a different goal, it's wrong.
 
 ---
 
@@ -117,8 +191,7 @@ IMPLEMENTATION INTENTIONS (proven to double completion rates):
 PROGRESS PRINCIPLE (small wins drive long-term motivation):
 - Days 1, 2, and 3 must be "quick win" tasks: under 15 minutes, near-certain to succeed, but genuinely meaningful to the goal. The person must feel real forward progress from day one.
 - End every task description with one short sentence on why it matters: "This [gives you X / builds Y / sets up Z]."
-- Every task must directly use what they told you above. A task that could apply to any random person is wrong.
-- Respect their available time when setting estimatedMinutes.
+- Respect their available time from their answers when setting estimatedMinutes.
 
 Build:
 1. 2–3 phases covering the full timeline
@@ -156,36 +229,24 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
   ]
 }`;
 
-    const geminiResponse = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 16384,
-          thinkingConfig: { thinkingBudget: 0 },
-        }
-      })
-    });
-
+    // ── AI call with fallback chain ───────────────────────────────────────────
+    // Re-eval: Pro → Flash+thinking → Groq
+    // Initial: Flash → Groq
     let aiText: string;
-
-    if (!geminiResponse.ok) {
-      const errData = await geminiResponse.json().catch(() => ({}));
-      if (geminiResponse.status === 429) {
+    try {
+      aiText = await callGemini(prompt, 16384, primaryModel, thinkingBudget);
+    } catch (err) {
+      if (err.message === 'RATE_LIMITED') {
         aiText = await callGroq(prompt, 16384);
+      } else if (useDeepThink) {
+        // Pro not available — fall back to Flash with reduced thinking budget
+        try {
+          aiText = await callGemini(prompt, 16384, 'gemini-2.5-flash', 4096);
+        } catch {
+          aiText = await callGroq(prompt, 16384);
+        }
       } else {
-        throw new Error(errData?.error?.message || 'Failed to generate roadmap');
-      }
-    } else {
-      const geminiData = await geminiResponse.json();
-      const candidate = geminiData.candidates?.[0];
-      aiText = candidate?.content?.parts?.[0]?.text ?? '';
-      const finishReason = candidate?.finishReason;
-
-      if (finishReason === 'MAX_TOKENS' || !aiText) {
-        throw new Error('Roadmap generation was cut off. Please try again.');
+        throw new Error('Failed to generate roadmap. Please try again.');
       }
     }
 
@@ -198,11 +259,10 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
       throw new Error('Failed to parse roadmap. Please try again.');
     }
 
-    // Save to database
+    // ── Save to database ──────────────────────────────────────────────────────
     let goalId: string;
 
     if (isReeval && goalData.goalId) {
-      // Update existing goal in place
       const { error: updateError } = await supabase
         .from('goals')
         .update({
@@ -216,10 +276,8 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
 
       goalId = goalData.goalId;
 
-      // Replace roadmap phases
       await supabase.from('roadmap_phases').delete().eq('goal_id', goalId);
 
-      // Delete only future tasks — keep completed history
       await supabase
         .from('daily_tasks')
         .delete()
@@ -240,47 +298,41 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
       goalId = goal.id;
     }
 
-    // Save roadmap phases
-    for (const phase of roadmap.phases) {
-      await supabase.from('roadmap_phases').insert({
+    const { error: phasesError } = await supabase.from('roadmap_phases').insert(
+      roadmap.phases.map((phase: any, i: number) => ({
         goal_id: goalId,
-        phase_number: roadmap.phases.indexOf(phase) + 1,
+        phase_number: i + 1,
         phase_title: phase.title,
         phase_description: phase.description,
-        milestones: phase.weeks
-      });
-    }
+        milestones: phase.weeks,
+      }))
+    );
+    if (phasesError) throw phasesError;
 
-    // Save daily tasks
-    for (const day of roadmap.dailyTasks) {
-      for (const task of day.tasks) {
-        await supabase.from('daily_tasks').insert({
-          goal_id: goalId,
-          task_title: task.title,
-          task_description: task.description,
-          scheduled_date: day.date,
-          estimated_minutes: task.estimatedMinutes,
-          priority: task.priority
-        });
-      }
-    }
+    const allTasks = roadmap.dailyTasks.flatMap((day: any) =>
+      day.tasks.map((task: any) => ({
+        goal_id: goalId,
+        task_title: task.title,
+        task_description: task.description,
+        scheduled_date: day.date,
+        estimated_minutes: task.estimatedMinutes,
+        priority: task.priority,
+      }))
+    );
+    const { error: tasksError } = await supabase.from('daily_tasks').insert(allTasks);
+    if (tasksError) throw tasksError;
 
-    // Update total tasks count
     await supabase.from('goals')
-      .update({ total_tasks: roadmap.dailyTasks.reduce((sum: number, day: any) => sum + day.tasks.length, 0) })
+      .update({ total_tasks: allTasks.length })
       .eq('id', goalId);
 
-    return new Response(JSON.stringify({
-      success: true,
-      goalId,
-      roadmap
-    }), {
+    return new Response(JSON.stringify({ success: true, goalId, roadmap }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
 
   } catch (error) {
     console.error('Error:', error);
-    return new Response(JSON.stringify({ error: error.message }), { 
+    return new Response(JSON.stringify({ error: error.message }), {
       status: 400,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
