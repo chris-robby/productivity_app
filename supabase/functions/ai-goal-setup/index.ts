@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-async function callGroq(prompt: string, maxTokens: number): Promise<string> {
+async function callGroq(systemPrompt: string, userPrompt: string, maxTokens: number): Promise<string> {
   const groqApiKey = Deno.env.get('GROQ_API_KEY')!;
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -16,7 +16,10 @@ async function callGroq(prompt: string, maxTokens: number): Promise<string> {
     },
     body: JSON.stringify({
       model: 'llama-3.3-70b-versatile',
-      messages: [{ role: 'user', content: prompt }],
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
       temperature: 0.3,
       max_tokens: maxTokens,
     }),
@@ -30,14 +33,15 @@ async function callGroq(prompt: string, maxTokens: number): Promise<string> {
   return data.choices?.[0]?.message?.content ?? '';
 }
 
-async function callGemini(prompt: string, maxTokens: number): Promise<string> {
+async function callGemini(systemPrompt: string, userPrompt: string, maxTokens: number): Promise<string> {
   const geminiApiKey = Deno.env.get('GEMINI_API_KEY')!;
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
   const response = await fetch(geminiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
       generationConfig: {
         temperature: 0.7,
         maxOutputTokens: maxTokens,
@@ -77,7 +81,7 @@ serve(async (req) => {
     );
     if (userError || !user) throw new Error('Unauthorized');
 
-    const { goalText, userContext, previousAnswers } = await req.json();
+    const { goalText, userContext, previousAnswers, preContext } = await req.json();
 
     // Format previous Q&A into readable lines (format: { q1, a1, q2, a2, ... })
     const previousAnswersFormatted = (() => {
@@ -93,30 +97,19 @@ serve(async (req) => {
       return pairs.length > 0 ? pairs.join('\n') : null;
     })();
 
-    const prompt = `Someone wants to achieve this goal: "${goalText}"
-${userContext ? `\nAbout them: ${userContext}` : ''}
-${previousAnswersFormatted ? `\nALREADY KNOWN — do not ask about ANY of these again, ever:\n${previousAnswersFormatted}` : ''}
+    // Rules and output format go in the system prompt — fixed, never diluted by context.
+    const systemPrompt = `You help users define clear, actionable goals and identify what information is still needed to build their plan.
 
-Do two things:
+STRICT RULE — NO THIRD-PARTY APPS: Never mention or recommend any app the user would need to download or sign up for. Describe actions directly instead.
 
-1. Rewrite the goal as one sentence that passes all three of these tests:
-   - SPECIFIC: what exactly will be achieved? (not "get fit" — what does fit mean for them?)
-   - MEASURABLE: a real number or clear outcome you can check (kg gained, km run, £ earned, words spoken)
-   - TIME-BOUND: includes a deadline or timeframe (use what they gave, or pick a realistic one)
-   Good examples: "get fit" → "Run a 5K in under 30 minutes by June", "gain muscle" → "Gain 8kg of lean muscle in 6 months training 4x per week", "learn Spanish" → "Hold a 10-minute conversation in Spanish within 6 months".
-   If you don't have enough info to add a number yet, use a sensible realistic default — you can always refine after the questions.
+QUESTION STYLE: Casual, one sentence, like a friend texting. Under 15 words per question. Never use: optimal, utilise, facilitate, ensure, establish, incorporate, consistency, commitment, strategies, it is important, in order to, or any formal language.
 
-2. Write ${previousAnswersFormatted ? '3 to 4' : '3 to 5'} questions to fill in gaps you genuinely don't know yet.
-${previousAnswersFormatted ? `
-STRICT RULES for re-evaluation questions:
-- The "ALREADY KNOWN" section above is off limits. Do not ask about anything in it.
-- Do not ask about body weight, height, fitness level, experience, or any physical stats if those are already answered.
-- Only ask about what has CHANGED or what is genuinely missing.
-- If you have enough info already, ask fewer questions (minimum 3).
-` : `
-Ask about: current starting point, hours available per week, timeline preference, any budget or equipment limits, past attempts.
-`}
-Question style: casual, one sentence, like a friend asking. No formal language. No words like "optimal", "utilise", "facilitate".
+GOAL FORMAT: Rewrite the goal as one specific, measurable, time-bound sentence.
+- SPECIFIC: what exactly will be achieved? (not "get fit" — what does fit mean for them?)
+- MEASURABLE: a real number or clear outcome you can check (kg gained, km run, £ earned, words spoken)
+- TIME-BOUND: includes a deadline or timeframe (use what they gave, or pick a realistic one)
+Good examples: "get fit" → "Run a 5K in under 30 minutes by June", "gain muscle" → "Gain 8kg of lean muscle in 6 months training 4x per week", "learn Spanish" → "Hold a 10-minute conversation in Spanish within 6 months".
+If you don't have enough info to add a number yet, use a sensible realistic default — you can always refine after the questions.
 
 Respond ONLY with valid JSON (no markdown, no code blocks):
 {
@@ -124,12 +117,30 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
   "questions": ["Question one?", "Question two?", "Question three?"]
 }`;
 
+    // User-specific data goes in the user message — can grow freely.
+    const userPrompt = `Goal: "${goalText}"
+${userContext ? `About them: ${userContext}\n` : ''}${preContext ? `\nWhat they want to change or adjust: ${preContext}\n` : ''}${previousAnswersFormatted ? `\nALREADY KNOWN — do not ask about ANY of these again, ever:\n${previousAnswersFormatted}\n` : ''}
+Do two things:
+1. Rewrite the goal as one sentence (see GOAL FORMAT rules).${preContext ? ' Take into account what they want to change.' : ''}
+
+2. Write ${previousAnswersFormatted ? '3 to 4' : '3 to 5'} questions to fill in gaps you genuinely don't know yet.
+${previousAnswersFormatted ? `
+STRICT RULES for re-evaluation questions:
+- The "ALREADY KNOWN" section above is off limits. Do not ask about anything in it.
+- Focus your questions on what they said they want to change: "${preContext}"
+- Do not ask about body weight, height, fitness level, experience, or any physical stats if those are already answered.
+- Only ask about what has CHANGED or what is genuinely missing.
+- If you have enough info already, ask fewer questions (minimum 3).
+` : `
+Ask about: current starting point, hours available per week, timeline preference, any budget or equipment limits, past attempts.
+`}`;
+
     let aiText: string;
     try {
-      aiText = await callGroq(prompt, 1024);
+      aiText = await callGroq(systemPrompt, userPrompt, 1024);
     } catch (err) {
       if (err.message === 'RATE_LIMITED') {
-        aiText = await callGemini(prompt, 1024);
+        aiText = await callGemini(systemPrompt, userPrompt, 1024);
       } else {
         throw err;
       }

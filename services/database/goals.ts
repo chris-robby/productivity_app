@@ -84,7 +84,7 @@ export async function completeGoal(goalId: string): Promise<void> {
 }
 
 /**
- * Mark goal as abandoned
+ * Mark goal as abandoned (soft delete — preserves history)
  */
 export async function abandonGoal(goalId: string): Promise<void> {
   const { error } = await supabase
@@ -94,6 +94,23 @@ export async function abandonGoal(goalId: string): Promise<void> {
 
   if (error) {
     console.error('Error abandoning goal:', error);
+    throw error;
+  }
+}
+
+/**
+ * Permanently delete a goal and all its related data.
+ * Child rows (roadmap_phases, daily_tasks, task_failures, progress_snapshots)
+ * are removed automatically via ON DELETE CASCADE.
+ */
+export async function deleteGoal(goalId: string): Promise<void> {
+  const { error } = await supabase
+    .from('goals')
+    .delete()
+    .eq('id', goalId);
+
+  if (error) {
+    console.error('Error deleting goal:', error);
     throw error;
   }
 }

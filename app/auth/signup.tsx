@@ -144,7 +144,7 @@ function getStyles(colors: ColorPalette) {
     },
     title: {
       fontSize: 36,
-      fontWeight: 'bold',
+      fontWeight: '700',
       color: colors.text,
       marginBottom: 8,
       textAlign: 'center',
@@ -178,7 +178,7 @@ function getStyles(colors: ColorPalette) {
       opacity: 0.5,
     },
     buttonText: {
-      color: '#FFFFFF',
+      color: colors.textOnPrimary,
       fontSize: 16,
       fontWeight: '600',
     },

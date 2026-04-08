@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-async function callGroq(prompt: string, maxTokens: number): Promise<string> {
+async function callGroq(systemPrompt: string, userPrompt: string, maxTokens: number): Promise<string> {
   const groqApiKey = Deno.env.get('GROQ_API_KEY')!;
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -16,7 +16,10 @@ async function callGroq(prompt: string, maxTokens: number): Promise<string> {
     },
     body: JSON.stringify({
       model: 'llama-3.3-70b-versatile',
-      messages: [{ role: 'user', content: prompt }],
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
       temperature: 0.7,
       max_tokens: maxTokens,
     }),
@@ -65,16 +68,31 @@ serve(async (req) => {
       .order('created_at', { ascending: false })
       .limit(10);
 
-    const geminiApiKey = Deno.env.get('GEMINI_API_KEY')!;
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
-
-    const failureHistory = failures?.map(f => 
+    const failureHistory = failures?.map(f =>
       `- Task type: ${f.task_type || 'unknown'}, Reason: ${f.user_reason}, Category: ${f.ai_categorization}`
     ).join('\n') || 'No previous failures';
 
-    const prompt = `You are analyzing why a task failed and how to adjust the plan.
+    // Rules and output format in system prompt — never diluted by task context.
+    const systemPrompt = `You analyze why a task failed and recommend how to adjust the plan. Be direct and practical.
 
-Failed Task: "${task.task_title}"
+STRICT RULE — NO THIRD-PARTY APPS: Never mention or recommend any app the user would need to download or sign up for (no MyFitnessPal, Duolingo, Anki, Stronglifts, Habitica, Google Fit, or similar). Describe the action itself instead.
+
+Respond ONLY with valid JSON (no markdown, no code blocks):
+{
+  "analysis": "brief analysis of why this failed (1-2 sentences)",
+  "pattern": "detected pattern or null",
+  "category": "time" or "energy" or "motivation" or "external" or "other",
+  "adjustments": {
+    "rescheduleTask": true or false,
+    "newDate": "YYYY-MM-DD" or null (3 days from now if rescheduling),
+    "modifyTask": "suggested modification to make it easier" or null,
+    "reasoning": "why this adjustment helps (1 sentence)"
+  },
+  "encouragement": "short motivational message to user (1-2 sentences)"
+}`;
+
+    // Task data and failure context in the user message.
+    const userPrompt = `Failed Task: "${task.task_title}"
 Description: ${task.task_description || 'No description'}
 Scheduled for: ${task.scheduled_date}
 Estimated time: ${task.estimated_minutes} minutes
@@ -89,27 +107,17 @@ Analyze:
 1. Why did this specific task fail?
 2. Is there a pattern in this user's failures?
 3. How should we adjust the plan to help them succeed?
-4. Should we reschedule this task or modify it?
+4. Should we reschedule this task or modify it?`;
 
-Respond ONLY with valid JSON (no markdown, no code blocks):
-{
-  "analysis": "brief analysis of why this failed (1-2 sentences)",
-  "pattern": "detected pattern or null",
-  "category": "time" or "energy" or "motivation" or "external" or "other",
-  "adjustments": {
-    "rescheduleTask": true or false,
-    "newDate": "2026-03-15" or null (3 days from now if rescheduling),
-    "modifyTask": "suggested modification to make it easier" or null,
-    "reasoning": "why this adjustment helps (1 sentence)"
-  },
-  "encouragement": "short motivational message to user (1-2 sentences)"
-}`;
+    const geminiApiKey = Deno.env.get('GEMINI_API_KEY')!;
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
 
     const geminiResponse = await fetch(geminiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
         generationConfig: {
           temperature: 0.7,
           maxOutputTokens: 1024,
@@ -123,7 +131,7 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
     if (!geminiResponse.ok) {
       const errData = await geminiResponse.json().catch(() => ({}));
       if (geminiResponse.status === 429) {
-        aiText = await callGroq(prompt, 1024);
+        aiText = await callGroq(systemPrompt, userPrompt, 1024);
       } else {
         throw new Error(errData?.error?.message || 'Failed to get AI adjustment');
       }
@@ -187,13 +195,13 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
       }).eq('id', taskId);
     }
 
-    return new Response(JSON.stringify(adjustment), { 
+    return new Response(JSON.stringify(adjustment), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
 
   } catch (error) {
     console.error('Error:', error);
-    return new Response(JSON.stringify({ error: error.message }), { 
+    return new Response(JSON.stringify({ error: error.message }), {
       status: 400,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });

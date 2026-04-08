@@ -15,6 +15,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { useGoalStore } from '../store/goalStore';
@@ -54,6 +55,7 @@ export default function RoadmapPreviewScreen() {
   const navigation = useNavigation();
   const { colors } = useTheme();
   const styles = useMemo(() => getStyles(colors), [colors]);
+  const insets = useSafeAreaInsets();
 
   const currentGoal = useGoalStore((state) => state.currentGoal);
   const roadmapPhases = useGoalStore((state) => state.roadmapPhases);
@@ -132,7 +134,7 @@ export default function RoadmapPreviewScreen() {
         goal: currentGoal.goal_text,
         timelineMonths: currentGoal.timeline_months,
         context: currentGoal.initial_conversation ?? {},
-        preContext: 'User updated their personal context and constraints.',
+        preContext: '',
         userContext: contextValue.trim(),
       });
       await loadGoal(goalId);
@@ -170,7 +172,7 @@ export default function RoadmapPreviewScreen() {
   const card = cards[currentIndex];
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
       <StatusBar style="light" />
 
       {/* Progress dots */}
@@ -227,7 +229,7 @@ export default function RoadmapPreviewScreen() {
           <Text style={styles.nextBtnText}>
             {isLast ? (isReeval ? 'Confirm Plan' : 'Start Plan') : 'Next'}
           </Text>
-          <Ionicons name="arrow-forward" size={20} color="#fff" />
+          <Ionicons name="arrow-forward" size={20} color={colors.textOnPrimary} />
         </TouchableOpacity>
       </View>
 
@@ -297,7 +299,7 @@ export default function RoadmapPreviewScreen() {
                   onPress={handleRegenerate}
                   disabled={!contextValue.trim()}
                 >
-                  <Ionicons name="refresh-outline" size={18} color="#fff" />
+                  <Ionicons name="refresh-outline" size={18} color={colors.textOnPrimary} />
                   <Text style={styles.regenBtnText}>Regenerate Plan</Text>
                 </TouchableOpacity>
               </>
@@ -340,21 +342,24 @@ function PhaseCard({
       <ScrollView
         style={pcStyles.body}
         contentContainerStyle={pcStyles.bodyContent}
-        showsVerticalScrollIndicator={false}
+        showsVerticalScrollIndicator
+        indicatorStyle="black"
       >
-        <Text style={[pcStyles.description, { color: palette.text }]} numberOfLines={3}>
+        <Text style={[pcStyles.description, { color: palette.text }]}>
           {phase.phase_description}
         </Text>
 
-        {phase.milestones && phase.milestones.length > 0 && (
+        {Array.isArray(phase.milestones) && phase.milestones.length > 0 && (
           <View style={pcStyles.weeks}>
             <Text style={[pcStyles.weeksLabel, { color: palette.accent }]}>WEEKLY FOCUS</Text>
-            {phase.milestones.map((week, i) => (
+            {phase.milestones.filter(w => w && w.focus).map((week, i) => (
               <View key={i} style={pcStyles.weekRow}>
                 <View style={[pcStyles.weekDot, { backgroundColor: palette.accent }]} />
                 <View style={pcStyles.weekText}>
                   <Text style={[pcStyles.weekFocus, { color: palette.text }]}>
-                    <Text style={[pcStyles.weekNum, { color: palette.accent }]}>Wk {week.weekNumber} · </Text>
+                    <Text style={[pcStyles.weekNum, { color: palette.accent }]}>
+                      {week.weekNumber ? `Wk ${week.weekNumber} · ` : ''}
+                    </Text>
                     {week.focus}
                   </Text>
                 </View>
@@ -594,7 +599,6 @@ function getStyles(colors: ColorPalette) {
     container: {
       flex: 1,
       backgroundColor: colors.background,
-      paddingTop: 60,
     },
     loadingContainer: {
       flex: 1,
@@ -682,7 +686,7 @@ function getStyles(colors: ColorPalette) {
     nextBtnText: {
       fontSize: 16,
       fontWeight: '700',
-      color: '#FFFFFF',
+      color: colors.textOnPrimary,
     },
 
     // Edit button row
@@ -713,7 +717,7 @@ function getStyles(colors: ColorPalette) {
     modalOverlay: {
       flex: 1,
       justifyContent: 'flex-end',
-      backgroundColor: 'rgba(0,0,0,0.55)',
+      backgroundColor: colors.overlay,
     },
     modalSheet: {
       borderTopLeftRadius: 24,
@@ -760,7 +764,7 @@ function getStyles(colors: ColorPalette) {
     regenBtnText: {
       fontSize: 16,
       fontWeight: '700',
-      color: '#FFFFFF',
+      color: colors.textOnPrimary,
     },
     regeneratingBox: {
       alignItems: 'center',

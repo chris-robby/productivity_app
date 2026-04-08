@@ -57,28 +57,35 @@ export default function TodayScreen() {
   );
 
   async function loadActiveGoals() {
-    const { data: goals } = await supabase
-      .from('goals')
-      .select('*')
-      .eq('status', 'active')
-      .order('created_at');
+    try {
+      const { data: goals, error } = await supabase
+        .from('goals')
+        .select('*')
+        .eq('status', 'active')
+        .order('created_at');
 
-    if (goals && goals.length > 0) {
-      setActiveGoals(goals as Goal[]);
-      useGoalStore.getState().setCurrentGoal(goals[0]);
-      useGoalStore.getState().loadGoal(goals[0].id);
-    } else {
-      setActiveGoals([]);
-      useGoalStore.getState().setCurrentGoal(null);
+      if (error) throw error;
+
+      if (goals && goals.length > 0) {
+        setActiveGoals(goals as Goal[]);
+        useGoalStore.getState().setCurrentGoal(goals[0]);
+        await useGoalStore.getState().loadGoal(goals[0].id);
+      } else {
+        setActiveGoals([]);
+        useGoalStore.getState().setCurrentGoal(null);
+      }
+    } catch (error) {
+      console.error('Error loading active goals:', error);
+    } finally {
+      setGoalsLoaded(true);
     }
-    setGoalsLoaded(true);
   }
 
   function handleGoalSubmit() {
     if (!goalInputText.trim()) return;
     useConversationStore.getState().reset();
     useConversationStore.getState().setGoalText(goalInputText.trim());
-    router.push('/conversation');
+    router.push('/habit-setup');
   }
 
   async function onRefresh() {
@@ -115,41 +122,41 @@ export default function TodayScreen() {
         style={styles.container}
       >
         <StatusBar style={colors.statusBar} />
-        <View style={[styles.goalSetupWrap, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 16 }]}>
-          {/* Hamburger — lets users with history access Journey & Goal Overview */}
+
+        {/* Hamburger — lets users with history access Journey & Goal Overview */}
+        <TouchableOpacity
+          onPress={() => setShowSidebar(true)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={[styles.goalSetupMenuBtn, { top: insets.top + 16 }]}
+        >
+          <Ionicons name="menu-outline" size={26} color={colors.textSecondary} />
+        </TouchableOpacity>
+
+        <View style={styles.goalSetupCenter}>
+          <Text style={styles.goalSetupHeading}>What is your goal?</Text>
+
+          <TextInput
+            style={styles.goalInputField}
+            placeholder="e.g. Run a marathon by end of year"
+            placeholderTextColor={colors.placeholder}
+            value={goalInputText}
+            onChangeText={setGoalInputText}
+            multiline
+            textAlignVertical="top"
+            autoFocus
+            scrollEnabled={false}
+          />
+
           <TouchableOpacity
-            onPress={() => setShowSidebar(true)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            style={styles.goalSetupMenuBtn}
+            style={[styles.goalSendBtn, !goalInputText.trim() && styles.goalSendBtnDisabled]}
+            onPress={handleGoalSubmit}
+            disabled={!goalInputText.trim()}
           >
-            <Ionicons name="menu-outline" size={26} color={colors.textSecondary} />
+            <Text style={styles.goalSendBtnText}>Continue</Text>
+            <Ionicons name="arrow-forward" size={16} color={colors.textOnPrimary} />
           </TouchableOpacity>
-
-          <View style={styles.goalSetupTop}>
-            <Text style={styles.goalSetupHeading}>What is your goal?</Text>
-            <Text style={styles.goalSetupSub}>I'll build you a personalised roadmap to achieve it.</Text>
-          </View>
-
-          <View style={styles.goalInputRow}>
-            <TextInput
-              style={styles.goalInputField}
-              placeholder="Set your vision..."
-              placeholderTextColor={colors.placeholder}
-              value={goalInputText}
-              onChangeText={setGoalInputText}
-              multiline
-              textAlignVertical="top"
-              autoFocus
-            />
-            <TouchableOpacity
-              style={[styles.goalSendBtn, !goalInputText.trim() && styles.goalSendBtnDisabled]}
-              onPress={handleGoalSubmit}
-              disabled={!goalInputText.trim()}
-            >
-              <MaterialCommunityIcons name="run" size={22} color="#fff" />
-            </TouchableOpacity>
-          </View>
         </View>
+
         <LeftSidebar visible={showSidebar} onClose={() => setShowSidebar(false)} />
       </KeyboardAvoidingView>
     );
@@ -239,7 +246,7 @@ export default function TodayScreen() {
       <StatusBar style={colors.statusBar} />
 
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <View style={styles.headerRow}>
           <TouchableOpacity
             onPress={() => setShowSidebar(true)}
@@ -300,7 +307,7 @@ export default function TodayScreen() {
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
                     {task.completed && (
-                      <Ionicons name="checkmark" size={16} color="#fff" />
+                      <Ionicons name="checkmark" size={16} color={colors.textOnPrimary} />
                     )}
                   </TouchableOpacity>
 
@@ -382,57 +389,49 @@ function getStyles(colors: ColorPalette) {
     },
 
     // ── Goal setup (no active goal) ──────────────────────────────────────────
-    goalSetupWrap: {
-      flex: 1,
-      paddingHorizontal: 24,
-      justifyContent: 'space-between',
+    goalSetupMenuBtn: {
+      position: 'absolute',
+      left: 20,
+      zIndex: 10,
     },
-    goalSetupTop: {
+    goalSetupCenter: {
       flex: 1,
+      paddingHorizontal: 28,
       justifyContent: 'center',
-      alignItems: 'center',
-      paddingBottom: 60,
+      paddingBottom: 40,
     },
     goalSetupHeading: {
-      fontSize: 28,
+      fontSize: 26,
       fontWeight: '700',
       color: colors.text,
-      textAlign: 'center',
-      marginBottom: 12,
-    },
-    goalSetupSub: {
-      fontSize: 15,
-      color: colors.textSecondary,
-      textAlign: 'center',
-      lineHeight: 22,
-    },
-    goalInputRow: {
-      flexDirection: 'row',
-      alignItems: 'flex-end',
-      gap: 10,
-      backgroundColor: colors.surface,
-      borderRadius: 16,
-      borderWidth: 1.5,
-      borderColor: colors.border,
-      paddingHorizontal: 14,
-      paddingVertical: 10,
+      marginBottom: 8,
     },
     goalInputField: {
-      flex: 1,
-      fontSize: 15,
+      backgroundColor: colors.surface,
+      borderWidth: 1.5,
+      borderColor: colors.inputBorder,
+      borderRadius: 16,
+      padding: 18,
+      fontSize: 16,
       color: colors.text,
-      maxHeight: 120,
-      lineHeight: 22,
-      paddingVertical: 4,
+      lineHeight: 24,
+      minHeight: 160,
+      textAlignVertical: 'top',
+      marginBottom: 16,
     },
     goalSendBtn: {
-      width: 36,
-      height: 36,
-      borderRadius: 18,
-      backgroundColor: colors.primary,
-      justifyContent: 'center',
+      flexDirection: 'row',
       alignItems: 'center',
-      marginBottom: 2,
+      justifyContent: 'center',
+      gap: 8,
+      backgroundColor: colors.primary,
+      paddingVertical: 15,
+      paddingHorizontal: 28,
+    },
+    goalSendBtnText: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.textOnPrimary,
     },
     goalSendBtnDisabled: {
       opacity: 0.35,
@@ -442,7 +441,6 @@ function getStyles(colors: ColorPalette) {
     header: {
       backgroundColor: colors.surface,
       paddingHorizontal: 20,
-      paddingTop: 60,
       paddingBottom: 12,
       borderBottomWidth: 1,
       borderBottomColor: colors.border,
@@ -489,18 +487,18 @@ function getStyles(colors: ColorPalette) {
     taskCard: {
       backgroundColor: colors.surface,
       padding: 18,
-      borderRadius: 12,
+      borderRadius: 4,
       marginBottom: 14,
       flexDirection: 'row',
       alignItems: 'center',
     },
     taskCardCompleted: {
-      backgroundColor: colors.success + '28',
+      backgroundColor: colors.successSubtle,
     },
     checkbox: {
       width: 24,
       height: 24,
-      borderRadius: 6,
+      borderRadius: 0,
       borderWidth: 2,
       borderColor: colors.primary,
       justifyContent: 'center',
@@ -547,10 +545,10 @@ function getStyles(colors: ColorPalette) {
       borderRadius: 4,
     },
     priorityDotHigh: {
-      backgroundColor: '#E05C5C',
+      backgroundColor: colors.error,
     },
     priorityDotMedium: {
-      backgroundColor: '#C4882A',
+      backgroundColor: colors.highlight,
     },
     priorityDotLow: {
       backgroundColor: colors.primary,
@@ -572,7 +570,7 @@ function getStyles(colors: ColorPalette) {
       flex: 1,
       justifyContent: 'center',
       alignItems: 'center',
-      backgroundColor: 'rgba(0,0,0,0.6)',
+      backgroundColor: colors.overlay,
       paddingHorizontal: 24,
     },
     dialog: {
@@ -636,7 +634,7 @@ function getStyles(colors: ColorPalette) {
     dialogSubmitText: {
       fontSize: 15,
       fontWeight: '700',
-      color: '#FFFFFF',
+      color: colors.textOnPrimary,
     },
   });
 }

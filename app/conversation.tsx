@@ -19,6 +19,7 @@ import { fetchGoalQuestions, generateRoadmap, regenerateRoadmap } from '../servi
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../contexts/ThemeContext';
 import { ColorPalette } from '../constants/colors';
+import { ScreenFooter } from '../components/ScreenFooter';
 
 type Step = 'primer' | 'loading' | 'confirming' | 'questions' | 'generating';
 
@@ -116,8 +117,10 @@ export default function ConversationScreen() {
 
     if (currentIndex < questions.length - 1) {
       setCurrentIndex(currentIndex + 1);
-    } else {
+    } else if (isReeval) {
       await handleGenerate({ ...answers, [currentIndex]: inputText.trim() });
+    } else {
+      router.push('/habit-setup');
     }
   }
 
@@ -243,10 +246,7 @@ export default function ConversationScreen() {
           />
         </ScrollView>
 
-        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <Text style={styles.backButtonText}>← Back</Text>
-          </TouchableOpacity>
+        <ScreenFooter onBack={() => router.back()}>
           <TouchableOpacity
             style={[styles.nextButton, !primerWhat.trim() && styles.nextButtonDisabled]}
             onPress={handlePrimerSubmit}
@@ -254,7 +254,7 @@ export default function ConversationScreen() {
           >
             <Text style={styles.nextButtonText}>Continue →</Text>
           </TouchableOpacity>
-        </View>
+        </ScreenFooter>
       </KeyboardAvoidingView>
     );
   }
@@ -294,11 +294,7 @@ export default function ConversationScreen() {
           </TouchableOpacity>
         </View>
 
-        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          <TouchableOpacity style={styles.backButton} onPress={handleBack}>
-            <Text style={styles.backButtonText}>← Back</Text>
-          </TouchableOpacity>
-
+        <ScreenFooter onBack={handleBack}>
           {editingGoal ? (
             <View style={styles.editActions}>
               <TouchableOpacity
@@ -323,7 +319,7 @@ export default function ConversationScreen() {
               <Text style={styles.nextButtonText}>Looks right →</Text>
             </TouchableOpacity>
           )}
-        </View>
+        </ScreenFooter>
       </KeyboardAvoidingView>
     );
   }
@@ -371,20 +367,17 @@ export default function ConversationScreen() {
         />
       </View>
 
-      <View style={styles.footer}>
-        <TouchableOpacity style={styles.backButton} onPress={handleBack}>
-          <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity>
+      <ScreenFooter onBack={handleBack}>
         <TouchableOpacity
           style={[styles.nextButton, !canAdvance && styles.nextButtonDisabled]}
           onPress={handleNext}
           disabled={!canAdvance}
         >
           <Text style={styles.nextButtonText}>
-            {isLast ? (isReeval ? 'Update Roadmap' : 'Generate Roadmap') : 'Next →'}
+            {isLast ? (isReeval ? 'Update Roadmap' : 'Set my habits →') : 'Next →'}
           </Text>
         </TouchableOpacity>
-      </View>
+      </ScreenFooter>
     </KeyboardAvoidingView>
   );
 }
@@ -539,21 +532,6 @@ function getStyles(colors: ColorPalette) {
     },
 
     // ── Footer ────────────────────────────────────────────────────────────
-    footer: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: 24,
-      borderTopWidth: 1,
-      borderTopColor: colors.border,
-    },
-    backButton: {
-      padding: 12,
-    },
-    backButtonText: {
-      fontSize: 16,
-      color: colors.primary,
-    },
     nextButton: {
       backgroundColor: colors.primary,
       paddingHorizontal: 24,
@@ -579,7 +557,7 @@ function getStyles(colors: ColorPalette) {
       opacity: 0.4,
     },
     nextButtonText: {
-      color: '#FFFFFF',
+      color: colors.textOnPrimary,
       fontSize: 16,
       fontWeight: '600',
     },

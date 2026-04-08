@@ -30,10 +30,6 @@ async function getValidSession() {
 async function callEdgeFunction(name: string, body: object): Promise<any> {
   const session = await getValidSession();
 
-  console.log('[Debug] Session user:', session.user?.email);
-  console.log('[Debug] Token expires at:', new Date((session.expires_at ?? 0) * 1000).toISOString());
-  console.log('[Debug] Token prefix:', session.access_token?.substring(0, 20) + '...');
-
   const response = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
     method: 'POST',
     headers: {
@@ -98,4 +94,19 @@ export async function getTaskAdjustment(
   failureReason: string
 ): Promise<AIAdjustmentResponse> {
   return callEdgeFunction('ai-adjust-plan', { taskId, failureReason });
+}
+
+export interface TaskSuggestion {
+  task: string;
+  reason: string;
+  howTo: string;
+  suggestedDays: number[];
+}
+
+export async function suggestTasks(
+  goalId: string,
+  goal: string,
+  userContext?: string
+): Promise<{ suggestions: TaskSuggestion[] }> {
+  return callEdgeFunction('ai-suggest-tasks', { goalId, goal, userContext });
 }

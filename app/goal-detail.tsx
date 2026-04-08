@@ -16,13 +16,24 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useConversationStore } from '../store/conversationStore';
-import { regenerateRoadmap } from '../services/aiService';
-import { format, parseISO } from 'date-fns';
+import { suggestTasks, TaskSuggestion, regenerateRoadmap } from '../services/aiService';
+import { format, parseISO, addDays, eachDayOfInterval } from 'date-fns';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../contexts/ThemeContext';
 import { ColorPalette } from '../constants/colors';
 import { Goal, RoadmapPhase } from '../types';
+
+const CHIP_DAYS = [
+  { label: 'Mo', value: 1 },
+  { label: 'Tu', value: 2 },
+  { label: 'We', value: 3 },
+  { label: 'Th', value: 4 },
+  { label: 'Fr', value: 5 },
+  { label: 'Sa', value: 6 },
+  { label: 'Su', value: 0 },
+];
+
+type HabitEntry = { id: string; habit_text: string; days: number[] };
 
 export default function GoalDetailScreen() {
   const router = useRouter();
@@ -37,68 +48,171 @@ export default function GoalDetailScreen() {
   const [editTimelineValue, setEditTimelineValue] = useState('');
   const [updatingPlan, setUpdatingPlan] = useState(false);
 
-  // Context editing
-  const [editingContext, setEditingContext] = useState(false);
-  const [contextValue, setContextValue] = useState('');
-  const [savingContext, setSavingContext] = useState(false);
 
   // Delete modal
   const [showDelete, setShowDelete] = useState(false);
   const [deleteReason, setDeleteReason] = useState('');
   const [deleting, setDeleting] = useState(false);
 
+  // AI suggestions sheet
+  const [showSuggest, setShowSuggest] = useState(false);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [suggestions, setSuggestions] = useState<TaskSuggestion[]>([]);
+  const [addedIds, setAddedIds] = useState<Set<number>>(new Set());
+  const [addingIdx, setAddingIdx] = useState<number | null>(null);
+  const [dayOverrides, setDayOverrides] = useState<Record<number, number[]>>({});
+  const [expandedSuggestion, setExpandedSuggestion] = useState<number | null>(null);
+
+  const [habits, setHabits] = useState<HabitEntry[]>([]);
+  const [editingHabitId, setEditingHabitId] = useState<string | null>(null);
+  const [habitEditDays, setHabitEditDays] = useState<number[]>([]);
+  const [savingHabit, setSavingHabit] = useState(false);
+
   const { colors } = useTheme();
   const styles = useMemo(() => getStyles(colors), [colors]);
 
-  function handleReeval() {
+  async function handleReeval() {
     if (!goal) return;
-    useConversationStore.getState().reset();
-    useConversationStore.getState().setReeval(
-      goal.id,
-      goal.goal_text,
-      goal.user_context ?? '',
-      goal.initial_conversation ?? {}
-    );
-    router.push('/conversation');
-  }
-
-  function startEditContext() {
-    if (!goal) return;
-    setContextValue(goal.user_context ?? '');
-    setEditingContext(true);
-  }
-
-  async function handleSaveContext() {
-    if (!goal) return;
-    setSavingContext(true);
+    setShowSuggest(true);
+    setLoadingSuggestions(true);
+    setSuggestions([]);
+    setAddedIds(new Set());
     try {
-      await supabase
-        .from('goals')
-        .update({ user_context: contextValue.trim() || null })
-        .eq('id', goal.id);
-      setGoal({ ...goal, user_context: contextValue.trim() || undefined });
-      setEditingContext(false);
-
-      if (contextValue.trim()) {
-        Alert.alert(
-          'Context saved',
-          'Re-evaluate your roadmap to apply this context to your plan.',
-          [
-            { text: 'Later', style: 'cancel' },
-            { text: 'Re-evaluate Now', onPress: () => {
-              useConversationStore.getState().reset();
-              useConversationStore.getState().setReeval(goal.id, goal.goal_text, contextValue.trim());
-              router.push('/conversation');
-            }},
-          ]
-        );
-      }
-    } catch (e) {
-      console.error('Failed to save context:', e);
+      const { suggestions: fetched } = await suggestTasks(
+        goal.id,
+        goal.goal_text,
+        goal.user_context ?? undefined
+      );
+      setSuggestions(fetched);
+      const overrides: Record<number, number[]> = {};
+      fetched.forEach((s, i) => { overrides[i] = s.suggestedDays ?? []; });
+      setDayOverrides(overrides);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not load suggestions. Please try again.');
+      setShowSuggest(false);
     } finally {
-      setSavingContext(false);
+      setLoadingSuggestions(false);
     }
   }
+
+  async function handleAddSuggestion(suggestion: TaskSuggestion, idx: number) {
+    if (!goal) return;
+    setAddingIdx(idx);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
+      const activeDays = dayOverrides[idx] ?? suggestion.suggestedDays;
+
+      // Save habit
+      const { error: habitErr } = await supabase.from('habits').insert({
+        goal_id: goal.id,
+        user_id: user.id,
+        habit_text: suggestion.task,
+        frequency: 'custom',
+        frequency_days: activeDays.length,
+      });
+      if (habitErr) throw habitErr;
+
+      // Pre-generate daily_tasks for the next 30 days
+      const startDate = new Date();
+      const days = eachDayOfInterval({ start: startDate, end: addDays(startDate, 29) });
+      const taskRows = days
+        .filter((day) => activeDays.includes(day.getDay()))
+        .map((day) => ({
+          goal_id: goal.id,
+          task_title: suggestion.task,
+          scheduled_date: format(day, 'yyyy-MM-dd'),
+          estimated_minutes: 0,
+          priority: 'medium',
+          completed: false,
+          failed: false,
+        }));
+
+      if (taskRows.length > 0) {
+        const { error: tasksErr } = await supabase.from('daily_tasks').insert(taskRows);
+        if (tasksErr) throw tasksErr;
+      }
+
+      setAddedIds((prev) => new Set(prev).add(idx));
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to add task.');
+    } finally {
+      setAddingIdx(null);
+    }
+  }
+
+  function handleDeleteHabit(habit: HabitEntry) {
+    Alert.alert(
+      'Remove task?',
+      `"${habit.habit_text}" will be removed from your plan and all future scheduled sessions will be deleted.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            if (!goal) return;
+            try {
+              const today = format(new Date(), 'yyyy-MM-dd');
+              await supabase
+                .from('daily_tasks')
+                .delete()
+                .eq('goal_id', goal.id)
+                .eq('task_title', habit.habit_text)
+                .gte('scheduled_date', today);
+              await supabase.from('habits').delete().eq('id', habit.id);
+              setHabits((prev) => prev.filter((h) => h.id !== habit.id));
+              if (editingHabitId === habit.id) setEditingHabitId(null);
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Failed to remove task.');
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  async function handleSaveHabitDays(habit: HabitEntry) {
+    if (!goal) return;
+    setSavingHabit(true);
+    try {
+      const today = format(new Date(), 'yyyy-MM-dd');
+
+      await supabase
+        .from('daily_tasks')
+        .delete()
+        .eq('goal_id', goal.id)
+        .eq('task_title', habit.habit_text)
+        .gte('scheduled_date', today);
+
+      if (habitEditDays.length > 0) {
+        const startDate = new Date();
+        const taskRows = eachDayOfInterval({ start: startDate, end: addDays(startDate, 29) })
+          .filter((day) => habitEditDays.includes(day.getDay()))
+          .map((day) => ({
+            goal_id: goal.id,
+            task_title: habit.habit_text,
+            scheduled_date: format(day, 'yyyy-MM-dd'),
+            estimated_minutes: 0,
+            priority: 'medium',
+            completed: false,
+            failed: false,
+          }));
+        if (taskRows.length > 0) await supabase.from('daily_tasks').insert(taskRows);
+      }
+
+      await supabase.from('habits').update({ frequency_days: habitEditDays.length }).eq('id', habit.id);
+
+      setHabits((prev) => prev.map((h) => h.id === habit.id ? { ...h, days: habitEditDays } : h));
+      setEditingHabitId(null);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to update schedule.');
+    } finally {
+      setSavingHabit(false);
+    }
+  }
+
 
   function startEditTitle() {
     if (!goal) return;
@@ -172,33 +286,13 @@ export default function GoalDetailScreen() {
     if (!goal || !deleteReason.trim()) return;
     setDeleting(true);
     try {
-      const today = format(new Date(), 'yyyy-MM-dd');
-
-      // Delete all future tasks for this goal — keep past tasks as history
-      await supabase
-        .from('daily_tasks')
-        .delete()
-        .eq('goal_id', goal.id)
-        .gte('scheduled_date', today);
-
-      // Archive the goal — status update is the critical call, done alone
-      await supabase
+      // Hard delete — CASCADE removes all tasks, phases, snapshots, and failures
+      const { error } = await supabase
         .from('goals')
-        .update({ status: 'abandoned' })
+        .delete()
         .eq('id', goal.id);
 
-      // Save the reason into initial_conversation — fire and forget, non-critical
-      supabase
-        .from('goals')
-        .update({
-          initial_conversation: {
-            ...(goal.initial_conversation ?? {}),
-            abandonment_reason: deleteReason.trim(),
-          },
-        })
-        .eq('id', goal.id)
-        .then(() => {})
-        .catch(() => {});
+      if (error) throw error;
 
       router.back();
     } finally {
@@ -215,12 +309,31 @@ export default function GoalDetailScreen() {
   async function loadDetail(goalId: string) {
     setLoading(true);
     try {
-      const [{ data: goalData }, { data: phaseData }] = await Promise.all([
-        supabase.from('goals').select('*').eq('id', goalId).single(),
-        supabase.from('roadmap_phases').select('*').eq('goal_id', goalId).order('phase_number'),
-      ]);
+      const today = format(new Date(), 'yyyy-MM-dd');
+      const [{ data: goalData }, { data: phaseData }, { data: habitsData }, { data: futureTasks }] =
+        await Promise.all([
+          supabase.from('goals').select('*').eq('id', goalId).single(),
+          supabase.from('roadmap_phases').select('*').eq('goal_id', goalId).order('phase_number'),
+          supabase.from('habits').select('id, habit_text').eq('goal_id', goalId).order('created_at'),
+          supabase.from('daily_tasks').select('task_title, scheduled_date').eq('goal_id', goalId).gte('scheduled_date', today).limit(200),
+        ]);
+
       if (goalData) setGoal(goalData as Goal);
       if (phaseData) setPhases(phaseData as RoadmapPhase[]);
+
+      if (habitsData) {
+        const dayMap: Record<string, Set<number>> = {};
+        for (const t of futureTasks ?? []) {
+          const dow = new Date(t.scheduled_date + 'T00:00:00').getDay();
+          if (!dayMap[t.task_title]) dayMap[t.task_title] = new Set();
+          dayMap[t.task_title].add(dow);
+        }
+        setHabits(habitsData.map((h) => ({
+          id: h.id,
+          habit_text: h.habit_text,
+          days: Array.from(dayMap[h.habit_text] ?? new Set<number>()),
+        })));
+      }
     } finally {
       setLoading(false);
     }
@@ -373,7 +486,7 @@ export default function GoalDetailScreen() {
               onPress={handleSaveInline}
               disabled={!canSave}
             >
-              <Ionicons name="flash-outline" size={16} color="#fff" />
+              <Ionicons name="flash-outline" size={16} color={colors.textOnPrimary} />
               <Text style={styles.saveUpdateText}>Save & Update Plan</Text>
             </TouchableOpacity>
           </View>
@@ -387,56 +500,62 @@ export default function GoalDetailScreen() {
           </TouchableOpacity>
         )}
 
-        {/* Context card */}
-        {!editingField && (
-          <View style={styles.contextCard}>
-            <View style={styles.contextHeader}>
-              <Text style={styles.contextTitle}>About You</Text>
-              {!editingContext && (
-                <TouchableOpacity
-                  onPress={startEditContext}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <Ionicons name="pencil-outline" size={16} color={colors.placeholder} />
-                </TouchableOpacity>
-              )}
-            </View>
 
-            {editingContext ? (
-              <>
-                <TextInput
-                  style={styles.contextInput}
-                  value={contextValue}
-                  onChangeText={setContextValue}
-                  placeholder="e.g. I work full time with 1 hour free each evening. I'm a complete beginner with a limited budget..."
-                  placeholderTextColor={colors.placeholder}
-                  multiline
-                  autoFocus
-                  textAlignVertical="top"
-                />
-                <View style={styles.contextActions}>
-                  <TouchableOpacity
-                    style={styles.contextCancelBtn}
-                    onPress={() => setEditingContext(false)}
-                  >
-                    <Text style={styles.contextCancelText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.contextSaveBtn, savingContext && { opacity: 0.5 }]}
-                    onPress={handleSaveContext}
-                    disabled={savingContext}
-                  >
-                    <Text style={styles.contextSaveText}>
-                      {savingContext ? 'Saving…' : 'Save'}
+        {/* Your Tasks */}
+        {habits.length > 0 && !editingField && (
+          <View style={[styles.section, { marginBottom: 20 }]}>
+            <Text style={styles.sectionTitle}>Your Tasks</Text>
+            {habits.map((habit) => {
+              const isEditing = editingHabitId === habit.id;
+              return (
+                <View key={habit.id} style={[styles.habitCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+                  <View style={styles.habitHeader}>
+                    <Text style={[styles.habitText, { color: colors.text }]} numberOfLines={2}>
+                      {habit.habit_text}
                     </Text>
-                  </TouchableOpacity>
+                    {!isEditing && (
+                      <View style={{ flexDirection: 'row', gap: 14 }}>
+                        <TouchableOpacity
+                          onPress={() => { setEditingHabitId(habit.id); setHabitEditDays(habit.days); }}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Ionicons name="pencil-outline" size={16} color={colors.placeholder} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => handleDeleteHabit(habit)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Ionicons name="trash-outline" size={16} color={colors.placeholder} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                  <DayChips
+                    days={isEditing ? habitEditDays : habit.days}
+                    onChange={isEditing ? setHabitEditDays : undefined}
+                    colors={colors}
+                  />
+                  {isEditing && (
+                    <View style={styles.habitActions}>
+                      <TouchableOpacity
+                        style={[styles.habitCancelBtn, { borderColor: colors.border }]}
+                        onPress={() => setEditingHabitId(null)}
+                        disabled={savingHabit}
+                      >
+                        <Text style={[styles.habitCancelText, { color: colors.textSecondary }]}>Cancel</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.habitSaveBtn, { backgroundColor: colors.primary }, (savingHabit || habitEditDays.length === 0) && styles.btnDisabled]}
+                        onPress={() => handleSaveHabitDays(habit)}
+                        disabled={savingHabit || habitEditDays.length === 0}
+                      >
+                        <Text style={styles.habitSaveText}>{savingHabit ? 'Saving…' : 'Save'}</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
-              </>
-            ) : (
-              <Text style={[styles.contextText, !goal.user_context && styles.contextPlaceholder]}>
-                {goal.user_context || 'No context added yet. Tap the pencil to add details about yourself — this helps the AI personalise your plan.'}
-              </Text>
-            )}
+              );
+            })}
           </View>
         )}
 
@@ -465,7 +584,7 @@ export default function GoalDetailScreen() {
                       ]}
                     >
                       {isPast ? (
-                        <Ionicons name="checkmark" size={14} color="#fff" />
+                        <Ionicons name="checkmark" size={14} color={colors.textOnPrimary} />
                       ) : (
                         <Text style={styles.phaseNumText}>{phase.phase_number}</Text>
                       )}
@@ -534,6 +653,96 @@ export default function GoalDetailScreen() {
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      {/* AI Suggestions sheet */}
+      <Modal
+        visible={showSuggest}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !loadingSuggestions && setShowSuggest(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => !loadingSuggestions && setShowSuggest(false)} />
+          <View style={[styles.suggestSheet, { backgroundColor: colors.surface }]}>
+            <View style={styles.suggestHeader}>
+              <Text style={[styles.suggestTitle, { color: colors.text }]}>AI Suggestions</Text>
+              <TouchableOpacity
+                onPress={() => setShowSuggest(false)}
+                disabled={loadingSuggestions}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+            <Text style={[styles.suggestSub, { color: colors.textSecondary }]}>
+              Tasks to add to your plan. Tap Add to include any that resonate.
+            </Text>
+
+            {loadingSuggestions ? (
+              <View style={styles.suggestLoading}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={[styles.suggestLoadingText, { color: colors.textSecondary }]}>
+                  Reviewing your plan…
+                </Text>
+              </View>
+            ) : (
+              <ScrollView showsVerticalScrollIndicator={false} style={styles.suggestScroll}>
+                {suggestions.map((s, idx) => (
+                  <View key={idx} style={[styles.suggestionCard, { borderColor: colors.border }]}>
+                    <Text style={[styles.suggestionTask, { color: colors.text }]}>{s.task}</Text>
+                    <DayChips
+                      days={dayOverrides[idx] ?? s.suggestedDays ?? []}
+                      onChange={(newDays) => setDayOverrides((prev) => ({ ...prev, [idx]: newDays }))}
+                      colors={colors}
+                    />
+                    <Text style={[styles.suggestionReason, { color: colors.textSecondary, marginTop: 10 }]}>
+                      {s.reason}
+                    </Text>
+
+                    {expandedSuggestion === idx && s.howTo && (
+                      <View style={[styles.howToBox, { backgroundColor: colors.surfaceElevated }]}>
+                        <Text style={[styles.howToLabel, { color: colors.primary }]}>HOW TO</Text>
+                        <Text style={[styles.howToText, { color: colors.text }]}>{s.howTo}</Text>
+                      </View>
+                    )}
+
+                    <View style={styles.suggestionFooter}>
+                      {s.howTo ? (
+                        <TouchableOpacity
+                          onPress={() => setExpandedSuggestion(expandedSuggestion === idx ? null : idx)}
+                          style={styles.howToToggle}
+                        >
+                          <Text style={[styles.howToToggleText, { color: colors.primary }]}>
+                            {expandedSuggestion === idx ? 'Hide ↑' : 'See how →'}
+                          </Text>
+                        </TouchableOpacity>
+                      ) : <View />}
+                      <TouchableOpacity
+                        style={[
+                          styles.addSuggestionBtn,
+                          { backgroundColor: addedIds.has(idx) ? colors.success : colors.primary },
+                          addingIdx === idx && { opacity: 0.6 },
+                        ]}
+                        onPress={() => handleAddSuggestion(s, idx)}
+                        disabled={addedIds.has(idx) || addingIdx !== null}
+                      >
+                        {addingIdx === idx ? (
+                          <ActivityIndicator size="small" color={colors.textOnPrimary} />
+                        ) : (
+                          <Text style={styles.addSuggestionBtnText}>
+                            {addedIds.has(idx) ? 'Added ✓' : 'Add'}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+                <View style={{ height: 20 }} />
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
 
       {/* Delete modal */}
       <Modal visible={showDelete} transparent animationType="fade" onRequestClose={() => setShowDelete(false)}>
@@ -631,7 +840,7 @@ function getStyles(colors: ColorPalette) {
     // ── Updating overlay ───────────────────────────────────────────────────────
     updatingOverlay: {
       ...StyleSheet.absoluteFillObject,
-      backgroundColor: 'rgba(0,0,0,0.55)',
+      backgroundColor: colors.overlay,
       zIndex: 100,
       justifyContent: 'center',
       alignItems: 'center',
@@ -640,7 +849,7 @@ function getStyles(colors: ColorPalette) {
     updatingText: {
       fontSize: 16,
       fontWeight: '600',
-      color: '#fff',
+      color: colors.textOnPrimary,
     },
 
     // ── Goal card ─────────────────────────────────────────────────────────────
@@ -764,7 +973,7 @@ function getStyles(colors: ColorPalette) {
     saveUpdateText: {
       fontSize: 14,
       fontWeight: '700',
-      color: '#fff',
+      color: colors.textOnPrimary,
     },
 
     // ── Re-evaluate ───────────────────────────────────────────────────────────
@@ -786,76 +995,6 @@ function getStyles(colors: ColorPalette) {
       color: colors.primary,
     },
 
-    // ── Context card ──────────────────────────────────────────────────────────
-    contextCard: {
-      backgroundColor: colors.surface,
-      marginHorizontal: 16,
-      marginBottom: 20,
-      padding: 18,
-      borderRadius: 14,
-    },
-    contextHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      marginBottom: 10,
-    },
-    contextTitle: {
-      fontSize: 14,
-      fontWeight: '700',
-      color: colors.textSecondary,
-      textTransform: 'uppercase',
-      letterSpacing: 0.8,
-    },
-    contextText: {
-      fontSize: 14,
-      color: colors.text,
-      lineHeight: 21,
-    },
-    contextPlaceholder: {
-      color: colors.placeholder,
-      fontStyle: 'italic',
-    },
-    contextInput: {
-      fontSize: 14,
-      color: colors.text,
-      backgroundColor: colors.inputBackground,
-      borderWidth: 1,
-      borderColor: colors.primary,
-      borderRadius: 10,
-      padding: 12,
-      minHeight: 100,
-      lineHeight: 21,
-      marginBottom: 12,
-    },
-    contextActions: {
-      flexDirection: 'row',
-      gap: 10,
-    },
-    contextCancelBtn: {
-      paddingVertical: 10,
-      paddingHorizontal: 16,
-      borderRadius: 10,
-      borderWidth: 1.5,
-      borderColor: colors.border,
-    },
-    contextCancelText: {
-      fontSize: 14,
-      fontWeight: '600',
-      color: colors.textSecondary,
-    },
-    contextSaveBtn: {
-      flex: 1,
-      paddingVertical: 10,
-      borderRadius: 10,
-      backgroundColor: colors.primary,
-      alignItems: 'center',
-    },
-    contextSaveText: {
-      fontSize: 14,
-      fontWeight: '700',
-      color: '#fff',
-    },
 
     // ── Phases ────────────────────────────────────────────────────────────────
     section: {
@@ -983,7 +1122,7 @@ function getStyles(colors: ColorPalette) {
       flex: 1,
       justifyContent: 'center',
       alignItems: 'center',
-      backgroundColor: 'rgba(0,0,0,0.6)',
+      backgroundColor: colors.overlay,
       paddingHorizontal: 24,
     },
     modalBox: {
@@ -1050,10 +1189,195 @@ function getStyles(colors: ColorPalette) {
     deleteConfirmText: {
       fontSize: 15,
       fontWeight: '700',
-      color: '#FFFFFF',
+      color: colors.textOnPrimary,
     },
     btnDisabled: {
       opacity: 0.35,
     },
+
+    // ── AI Suggestions sheet ──────────────────────────────────────────────────
+    suggestSheet: {
+      position: 'absolute',
+      bottom: 0,
+      left: 0,
+      right: 0,
+      borderTopLeftRadius: 24,
+      borderTopRightRadius: 24,
+      padding: 24,
+      paddingBottom: 40,
+      maxHeight: '85%',
+    },
+    suggestHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 8,
+    },
+    suggestTitle: {
+      fontSize: 20,
+      fontWeight: '700',
+    },
+    suggestSub: {
+      fontSize: 14,
+      lineHeight: 20,
+      marginBottom: 20,
+    },
+    suggestLoading: {
+      alignItems: 'center',
+      paddingVertical: 40,
+      gap: 14,
+    },
+    suggestLoadingText: {
+      fontSize: 15,
+    },
+    suggestScroll: {
+      flexGrow: 0,
+    },
+    suggestionCard: {
+      borderWidth: 1,
+      borderRadius: 14,
+      padding: 16,
+      marginBottom: 12,
+    },
+    suggestionTask: {
+      fontSize: 15,
+      fontWeight: '700',
+      marginBottom: 4,
+    },
+    suggestionReason: {
+      fontSize: 13,
+      lineHeight: 19,
+      marginBottom: 14,
+    },
+    addSuggestionBtn: {
+      paddingVertical: 10,
+      paddingHorizontal: 20,
+      borderRadius: 8,
+      alignItems: 'center',
+      minWidth: 80,
+    },
+    addSuggestionBtnText: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: colors.textOnPrimary,
+    },
+    suggestionFooter: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginTop: 12,
+    },
+    howToToggle: {
+      paddingVertical: 6,
+      paddingHorizontal: 2,
+    },
+    howToToggleText: {
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    howToBox: {
+      borderRadius: 10,
+      padding: 12,
+      marginTop: 12,
+    },
+    howToLabel: {
+      fontSize: 10,
+      fontWeight: '700',
+      letterSpacing: 1.2,
+      marginBottom: 6,
+    },
+    howToText: {
+      fontSize: 13,
+      lineHeight: 20,
+    },
+
+    // ── Your Tasks ────────────────────────────────────────────────────────────
+    habitCard: {
+      borderWidth: 1,
+      borderRadius: 12,
+      padding: 14,
+      marginBottom: 10,
+    },
+    habitHeader: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      justifyContent: 'space-between',
+      marginBottom: 2,
+    },
+    habitText: {
+      flex: 1,
+      fontSize: 14,
+      fontWeight: '600',
+      lineHeight: 20,
+      marginRight: 8,
+    },
+    habitActions: {
+      flexDirection: 'row',
+      gap: 10,
+      marginTop: 12,
+    },
+    habitCancelBtn: {
+      paddingVertical: 9,
+      paddingHorizontal: 16,
+      borderRadius: 10,
+      borderWidth: 1.5,
+    },
+    habitCancelText: {
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    habitSaveBtn: {
+      flex: 1,
+      paddingVertical: 9,
+      borderRadius: 10,
+      alignItems: 'center',
+    },
+    habitSaveText: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: colors.textOnPrimary,
+    },
   });
+}
+
+function DayChips({
+  days,
+  onChange,
+  colors,
+}: {
+  days: number[];
+  onChange?: (days: number[]) => void;
+  colors: ColorPalette;
+}) {
+  return (
+    <View style={{ flexDirection: 'row', gap: 5, flexWrap: 'wrap', marginTop: 8 }}>
+      {CHIP_DAYS.map((d) => {
+        const active = days.includes(d.value);
+        return (
+          <TouchableOpacity
+            key={d.value}
+            onPress={() => {
+              if (!onChange) return;
+              onChange(active ? days.filter((x) => x !== d.value) : [...days, d.value]);
+            }}
+            disabled={!onChange}
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 17,
+              justifyContent: 'center',
+              alignItems: 'center',
+              borderWidth: 1.5,
+              borderColor: active ? colors.primary : colors.border,
+              backgroundColor: active ? colors.primary : 'transparent',
+            }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: '700', color: active ? colors.textOnPrimary : colors.textSecondary }}>
+              {d.label}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
 }

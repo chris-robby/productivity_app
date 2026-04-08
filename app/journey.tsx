@@ -11,6 +11,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { format, isToday, isYesterday, isTomorrow, parseISO, addDays } from 'date-fns';
 import { supabase } from '../lib/supabase';
 import { useGoalStore } from '../store/goalStore';
@@ -35,6 +36,7 @@ export default function JourneyScreen() {
 
   const { colors } = useTheme();
   const styles = useMemo(() => getStyles(colors), [colors]);
+  const insets = useSafeAreaInsets();
 
   const currentGoal = useGoalStore((state) => state.currentGoal);
   const roadmapPhases = useGoalStore((state) => state.roadmapPhases);
@@ -167,8 +169,8 @@ export default function JourneyScreen() {
                     isFailed && styles.checkboxFailed,
                   ]}
                 >
-                  {isDone && <Ionicons name="checkmark" size={14} color="#fff" />}
-                  {isFailed && <Ionicons name="close" size={14} color="#fff" />}
+                  {isDone && <Ionicons name="checkmark" size={14} color={colors.textOnPrimary} />}
+                  {isFailed && <Ionicons name="close" size={14} color={colors.textOnPrimary} />}
                 </View>
 
                 <View style={styles.taskContent}>
@@ -207,7 +209,7 @@ export default function JourneyScreen() {
     <View style={styles.container}>
       <StatusBar style={colors.statusBar} />
 
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
         <TouchableOpacity
           onPress={() => router.back()}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -259,7 +261,6 @@ function getStyles(colors: ColorPalette) {
       alignItems: 'center',
       justifyContent: 'space-between',
       paddingHorizontal: 16,
-      paddingTop: 60,
       paddingBottom: 14,
       backgroundColor: colors.surface,
       borderBottomWidth: 1,
@@ -306,7 +307,7 @@ function getStyles(colors: ColorPalette) {
     todayPillText: {
       fontSize: 10,
       fontWeight: '800',
-      color: '#fff',
+      color: colors.textOnPrimary,
       letterSpacing: 0.5,
     },
 
@@ -337,7 +338,7 @@ function getStyles(colors: ColorPalette) {
     checkbox: {
       width: 22,
       height: 22,
-      borderRadius: 6,
+      borderRadius: 0,
       borderWidth: 2,
       borderColor: colors.inputBorder,
       justifyContent: 'center',

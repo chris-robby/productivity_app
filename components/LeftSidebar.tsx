@@ -8,10 +8,10 @@ import {
   Animated,
   Dimensions,
   Modal,
-  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../contexts/ThemeContext';
 import { ColorPalette } from '../constants/colors';
 
@@ -41,6 +41,7 @@ export function LeftSidebar({ visible, onClose }: LeftSidebarProps) {
 
   const { colors } = useTheme();
   const styles = useMemo(() => getStyles(colors), [colors]);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (visible) {
@@ -100,7 +101,7 @@ export function LeftSidebar({ visible, onClose }: LeftSidebarProps) {
         <Animated.View
           style={[styles.drawer, { transform: [{ translateX: slideAnim }] }]}
         >
-          <View style={styles.drawerHeader}>
+          <View style={[styles.drawerHeader, { paddingTop: insets.top + 16 }]}>
             <Text style={styles.drawerTitle}>Menu</Text>
             <TouchableOpacity
               onPress={onClose}
@@ -164,7 +165,6 @@ function getStyles(colors: ColorPalette) {
       alignItems: 'center',
       justifyContent: 'space-between',
       paddingHorizontal: 20,
-      paddingTop: Platform.OS === 'ios' ? 60 : 40,
       paddingBottom: 16,
       borderBottomWidth: 1,
       borderBottomColor: colors.border,

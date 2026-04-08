@@ -4,6 +4,7 @@ export interface ColorPalette {
   surfaceElevated: string;
   text: string;
   textSecondary: string;
+  textOnPrimary: string;   // white text for use on primary/success/error backgrounds
   primary: string;
   success: string;
   highlight: string;
@@ -14,25 +15,32 @@ export interface ColorPalette {
   placeholder: string;
   tabBar: string;
   tabBarBorder: string;
+  overlay: string;         // modal/backdrop overlay colour
+  errorSubtle: string;     // translucent error tint (e.g. logout button bg)
+  successSubtle: string;   // translucent success tint (e.g. completed task bg)
   statusBar: 'light' | 'dark';
 }
 
 export const darkColors: ColorPalette = {
-  background: '#1A1E2E',
-  surface: '#21253A',
-  surfaceElevated: '#2A2F45',
+  background: '#0B0D18',
+  surface: '#121729',
+  surfaceElevated: '#1A1F38',
   text: '#D4D6E2',
   textSecondary: '#8E93A6',
+  textOnPrimary: '#FFFFFF',
   primary: '#4A90C4',
   success: '#5DAA85',
   highlight: '#C4882A',
   error: '#E05C5C',
-  border: '#2E3348',
-  inputBackground: '#21253A',
-  inputBorder: '#3A3F55',
-  placeholder: '#5C6275',
-  tabBar: '#21253A',
-  tabBarBorder: '#2E3348',
+  border: '#1C2238',
+  inputBackground: '#121729',
+  inputBorder: '#252D48',
+  placeholder: '#4E5368',
+  tabBar: '#121729',
+  tabBarBorder: '#1C2238',
+  overlay: 'rgba(0,0,0,0.7)',
+  errorSubtle: 'rgba(224,92,92,0.12)',
+  successSubtle: 'rgba(93,170,133,0.16)',
   statusBar: 'light',
 };
 
@@ -42,6 +50,7 @@ export const lightColors: ColorPalette = {
   surfaceElevated: '#FFFFFF',
   text: '#1A1A1A',
   textSecondary: '#666666',
+  textOnPrimary: '#FFFFFF',
   primary: '#007AFF',
   success: '#34C759',
   highlight: '#FF9500',
@@ -52,6 +61,9 @@ export const lightColors: ColorPalette = {
   placeholder: '#999999',
   tabBar: '#FFFFFF',
   tabBarBorder: '#E0E0E0',
+  overlay: 'rgba(0,0,0,0.5)',
+  errorSubtle: 'rgba(255,59,48,0.1)',
+  successSubtle: 'rgba(52,199,89,0.12)',
   statusBar: 'dark',
 };
 

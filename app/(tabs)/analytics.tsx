@@ -13,6 +13,7 @@ import { useAppStore } from '../../store';
 import { format, subDays } from 'date-fns';
 import { useTheme } from '../../contexts/ThemeContext';
 import { ColorPalette } from '../../constants/colors';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 interface DailyStats {
   date: string;
@@ -31,6 +32,7 @@ export default function AnalyticsScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => getStyles(colors), [colors]);
   const isDemoMode = useAppStore((state) => state.isDemoMode);
+  const insets = useSafeAreaInsets();
 
   const currentGoal = useGoalStore((state) => state.currentGoal);
 
@@ -111,7 +113,7 @@ export default function AnalyticsScreen() {
     <View style={styles.container}>
       <StatusBar style={colors.statusBar} />
 
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 20 }]}>
         <Text style={styles.headerTitle}>Analytics</Text>
         {currentGoal && (
           <Text style={styles.headerSubtitle} numberOfLines={1}>
@@ -239,7 +241,6 @@ function getStyles(colors: ColorPalette) {
     header: {
       backgroundColor: colors.surface,
       padding: 20,
-      paddingTop: 60,
       borderBottomWidth: 1,
       borderBottomColor: colors.border,
     },
@@ -366,7 +367,7 @@ function getStyles(colors: ColorPalette) {
     reasonRankText: {
       fontSize: 14,
       fontWeight: 'bold',
-      color: '#FFFFFF',
+      color: colors.textOnPrimary,
     },
     reasonContent: {
       flex: 1,

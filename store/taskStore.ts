@@ -129,7 +129,9 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
             },
             body: JSON.stringify({ taskId, failureReason: reason }),
           }
-        ).catch(() => {});
+        ).catch((error) => {
+          console.error('[ai-adjust-plan] Background adjustment failed:', error);
+        });
       });
     } catch (error) {
       console.error('Error submitting failure reason:', error);

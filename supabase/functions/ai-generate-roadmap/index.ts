@@ -1,12 +1,13 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
+import { detectCategory, getTemplate } from "../_shared/templates.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-async function callGroq(prompt: string, maxTokens: number): Promise<string> {
+async function callGroq(systemPrompt: string, userPrompt: string, maxTokens: number): Promise<string> {
   const groqApiKey = Deno.env.get('GROQ_API_KEY')!;
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -16,7 +17,10 @@ async function callGroq(prompt: string, maxTokens: number): Promise<string> {
     },
     body: JSON.stringify({
       model: 'llama-3.3-70b-versatile',
-      messages: [{ role: 'user', content: prompt }],
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
       temperature: 0.3,
       max_tokens: maxTokens,
     }),
@@ -30,7 +34,8 @@ async function callGroq(prompt: string, maxTokens: number): Promise<string> {
 }
 
 async function callGemini(
-  prompt: string,
+  systemPrompt: string,
+  userPrompt: string,
   maxTokens: number,
   model: string,
   thinkingBudget: number
@@ -41,7 +46,8 @@ async function callGemini(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
       generationConfig: {
         temperature: 0.3,
         maxOutputTokens: maxTokens,
@@ -61,6 +67,75 @@ async function callGemini(
     throw new Error('AI response was cut off. Please try again.');
   }
   return text;
+}
+
+// Parses Q&A pairs and extracts hard constraints the AI must respect.
+// Looking at the question text tells us what the answer number means,
+// so "3" after "how many days can you train?" → training days, not hours.
+function extractConstraints(context: Record<string, string>, goal: string): string {
+  const constraints: string[] = [];
+  const isFitness = /muscle|gym|weight loss|fat|run|sport|fitness|workout|train|physique/i.test(goal);
+
+  let i = 1;
+  while (context?.[`q${i}`]) {
+    const q = context[`q${i}`].toLowerCase();
+    const a = (context[`a${i}`] || '').trim();
+    const aLower = a.toLowerCase();
+    i++;
+
+    if (!a) continue;
+
+    // Time per session / per day
+    if (/how (long|many).*(min|hour|time)|time.*available|available.*time|session.*(long|duration)/i.test(q)) {
+      const m = a.match(/(\d+)\s*(hour|hr|h\b)/i);
+      const m2 = a.match(/(\d+)\s*(min)/i);
+      if (m) constraints.push(`Time available: ${parseInt(m[1]) * 60} minutes per session — no task should exceed this`);
+      else if (m2) constraints.push(`Time available: ${m2[1]} minutes per session — no task should exceed this`);
+    }
+
+    // Days per week
+    if (/how (many|often)|days.*(week|train|go)|times.*(week)|frequency/i.test(q)) {
+      const m = a.match(/(\d+)/);
+      if (m) constraints.push(`Frequency: ${m[1]} days per week — build the weekly rhythm around exactly this many active days`);
+    }
+
+    // Current bodyweight (not target weight)
+    if (/weigh|bodyweight|body weight|how heavy/i.test(q) && !/goal|target|want to|lose|gain/i.test(q)) {
+      const m = a.match(/(\d+\.?\d*)\s*(kg|lbs|pounds)/i);
+      if (m) {
+        const raw = parseFloat(m[1]);
+        const unit = m[2].toLowerCase();
+        const kg = (unit === 'lbs' || unit === 'pounds') ? Math.round(raw * 0.453) : raw;
+        constraints.push(`Bodyweight: ${kg}kg`);
+        if (isFitness) constraints.push(`Protein target: ${Math.round(kg * 1.6)}–${Math.round(kg * 1.8)}g per day (use the lower end for fat loss, upper end for muscle gain)`);
+      }
+    }
+
+    // Experience level
+    if (/experience|level|background|how long.*(train|gym|work|study|been)/i.test(q)) {
+      if (/beginner|never|first time|no experience|just start|0\s*year/i.test(aLower)) {
+        constraints.push('Experience: complete beginner — use only the most basic version of every task, no jargon');
+      } else if (/intermediate|some|1[\-–]?2 year|couple|few year/i.test(aLower)) {
+        constraints.push('Experience: intermediate');
+      } else if (/advanced|experienced|\b[3-9]\+?\s*year|many year/i.test(aLower)) {
+        constraints.push('Experience: advanced');
+      }
+    }
+
+    // Equipment / gym access
+    if (/equipment|gym|tools|kit|access|home|dumbbells?/i.test(q)) {
+      constraints.push(`Equipment: ${a}`);
+    }
+
+    // Budget
+    if (/budget|spend|afford|cost|money|invest/i.test(q)) {
+      constraints.push(`Budget: ${a}`);
+    }
+  }
+
+  if (constraints.length === 0) return '';
+  return `USER CONSTRAINTS — hard limits extracted from their answers. Every single task must respect ALL of these:
+${constraints.map(c => `• ${c}`).join('\n')}`;
 }
 
 serve(async (req) => {
@@ -84,20 +159,43 @@ serve(async (req) => {
     const { goalData, isReeval } = await req.json();
 
     const today = new Date().toISOString().split('T')[0];
+    const weekEndDate = new Date();
+    weekEndDate.setDate(weekEndDate.getDate() + 6);
+    const weekEnd = weekEndDate.toISOString().split('T')[0];
     const targetDate = new Date();
     targetDate.setMonth(targetDate.getMonth() + (goalData.timelineMonths || 6));
     const target = targetDate.toISOString().split('T')[0];
 
-    // When regenerating, fall back to stored Q&A if caller passed empty context
+    // When regenerating, always merge stored Q&A with new context so the
+    // roadmap generator sees the full picture (original answers + re-eval answers).
     let resolvedContext = goalData.context;
-    if (isReeval && goalData.goalId && (!resolvedContext || Object.keys(resolvedContext).length === 0)) {
+    if (isReeval && goalData.goalId) {
       const { data: existingGoal } = await supabase
         .from('goals')
         .select('initial_conversation')
         .eq('id', goalData.goalId)
         .single();
       if (existingGoal?.initial_conversation) {
-        resolvedContext = existingGoal.initial_conversation;
+        const stored = existingGoal.initial_conversation as Record<string, string>;
+        if (!resolvedContext || Object.keys(resolvedContext).length === 0) {
+          // No new context — use stored entirely
+          resolvedContext = stored;
+        } else {
+          // Merge: new answers first (q1…qN), then append old Q&A after them.
+          // New questions cover what changed; old questions cover what didn't.
+          const merged: Record<string, string> = { ...resolvedContext };
+          let newCount = 0;
+          while (merged[`q${newCount + 1}`]) newCount++;
+          let oldI = 1;
+          let appendI = newCount + 1;
+          while (stored[`q${oldI}`]) {
+            merged[`q${appendI}`] = stored[`q${oldI}`];
+            merged[`a${appendI}`] = stored[`a${oldI}`] ?? '';
+            oldI++;
+            appendI++;
+          }
+          resolvedContext = merged;
+        }
       }
     }
 
@@ -130,9 +228,9 @@ serve(async (req) => {
     // generating the structured plan — this dramatically improves plan quality.
     let strategyAnalysis = '';
     if (useDeepThink) {
-      const analysisPrompt = `You are an expert planner. A person is re-evaluating their goal. Before building their new roadmap, think through their situation carefully.
+      const analysisSystemPrompt = `You are an expert planner. Analyze a person's goal and situation before building their roadmap. Answer four specific questions in plain text. Base your answers only on what they told you — no generic advice.`;
 
-Goal: ${goalData.goal}
+      const analysisUserPrompt = `Goal: ${goalData.goal}
 Timeline: ${goalData.timelineMonths || 6} months (${today} → ${target})
 ${userProfileSection ? `\n${userProfileSection}\n` : ''}
 What they told us:
@@ -147,7 +245,7 @@ Answer these four questions in plain text:
 Write 4 short paragraphs, one per question. Be specific. No generic advice.`;
 
       try {
-        strategyAnalysis = await callGemini(analysisPrompt, 2048, primaryModel, thinkingBudget);
+        strategyAnalysis = await callGemini(analysisSystemPrompt, analysisUserPrompt, 2048, primaryModel, thinkingBudget);
       } catch {
         // Non-critical — if Pro is unavailable or fails, continue without the analysis step
         strategyAnalysis = '';
@@ -155,50 +253,74 @@ Write 4 short paragraphs, one per question. Be specific. No generic advice.`;
     }
 
     // ── Step 2: Roadmap generation ────────────────────────────────────────────
-    const prompt = `Create a roadmap for this goal:
+    const category = detectCategory(goalData.goal);
+    const categoryTemplate = getTemplate(category);
+    const constraintsSection = extractConstraints(resolvedContext ?? {}, goalData.goal);
 
-Goal: ${goalData.goal}
+    // Rules go in the system prompt — they are processed separately and never
+    // diluted by the growing user context below.
+    const roadmapSystemPrompt = `You are a straight-talking expert coach writing a personalised plan. Apply these rules to every single task and description you write.
+
+━━ RULE 1 — LANGUAGE ━━
+Write every word as if you are texting a friend who knows nothing about this topic. Plain English only. No jargon. No formal language. If a 14-year-old would not understand a word, replace it.
+- Short sentences. One idea per sentence. Never more than 20 words in a sentence.
+- BANNED WORDS — never use any of these under any circumstances: log, logging, leverage, implement, utilise, utilize, optimal, actionable, facilitate, enhance, cultivate, embark, focus on, work on, explore, look into, delve, ensure, maintain, establish, incorporate, prioritise, consistency, commitment, journey, transformative, empowering, strategies, techniques, comprehensive, dedicated, it is important to, it is essential, make sure to, be sure to, in order to, additionally, furthermore, moreover, fostering, harnessing, navigating, unleash, progressive overload. Instead of "log": say "write down", "note", or "track". Instead of "progressive overload": say "add weight each session".
+- Read every sentence you write. If it sounds like a motivational poster or a business report, rewrite it.
+- BAD description: "Ensure you maintain a consistent workout routine by incorporating compound movements to facilitate muscle growth."
+- GOOD description: "After work, go to the gym. Do 3 sets of 5 squats. Add 2.5kg from last session. That's it."
+
+━━ RULE 2 — NO THIRD-PARTY APPS ━━
+Never mention any app the user needs to download or sign up for (no MyFitnessPal, Duolingo, Anki, Stronglifts, Habitica, Google Fit, or similar). Describe the action directly. Exception: professional tools required for the actual work (LinkedIn, Figma, VS Code) are fine.
+
+━━ RULE 3 — TASK TITLES ━━
+6–10 words, start with a verb, be specific.
+- BAD: "Exercise" / "Work on nutrition" / "Study"
+- GOOD: "Do 3×5 squat at 60kg and write the weight down" / "Eat 160g protein across 4 meals" / "Write 10 vocabulary flashcards on past tense"
+
+━━ RULE 4 — TASK DESCRIPTIONS ━━
+Every description must follow this exact structure:
+1. Habit anchor first: "After [daily habit], [do the task]."
+2. Exactly what to do — be specific (weights, reps, amounts, durations, counts).
+3. One sentence on why it matters: "This [does X]."
+- BAD: "Focus on building a strong foundation by working on your nutrition and establishing healthy habits."
+- GOOD: "After dinner, plan tomorrow's meals. Write out breakfast, lunch, snack, dinner, and add up the protein. Aim for [X]g. Knowing your numbers the night before means you won't go off track."
+
+━━ RULE 5 — QUICK WINS (days 1–3) ━━
+Days 1, 2, and 3 must be tasks that take under 15 minutes, are near-certain to succeed, but feel genuinely meaningful. The person must feel real progress from day one.
+
+━━ RULE 6 — PERSONALISATION ━━
+Every task must come directly from the user's answers. If a task could apply to a stranger with a different goal, rewrite it until it can't.
+
+━━ RULE 7 — DOMAIN EXPERTISE ━━
+You are an expert. Use real specifics:
+- Fitness/muscle → real exercise names, sets × reps, protein grams from their bodyweight, rest day nutrition
+- Fat loss → step counts, calorie numbers, specific food swaps, lean protein sources by name
+- Language learning → grammar topics by name, vocab counts per day, conversation practice
+- Business → specific tactics (cold outreach, SEO, paid ads), real revenue milestones
+- Coding → specific languages, real projects to build
+- Any other goal → same level of specificity
+
+Respond ONLY with valid JSON (no markdown, no code blocks).`;
+
+    // User context + data + build instructions go in the user message.
+    // This can grow freely without affecting the rules above.
+    const roadmapUserPrompt = `Goal: ${goalData.goal}
 Timeline: ${goalData.timelineMonths || 6} months (${today} → ${target})
-${userProfileSection ? `\n${userProfileSection}\n` : ''}
-What they told us:
+${userProfileSection ? `\n${userProfileSection}\n` : ''}${constraintsSection ? `\n${constraintsSection}\n` : ''}
+Full Q&A from the user:
 ${contextFormatted}
 ${strategyAnalysis ? `\nPlanning analysis (use this to shape every decision):\n${strategyAnalysis}\n` : ''}
-PERSONALISATION RULE: Every task must be traceable to a specific answer or constraint above. If a task could apply to a stranger with a different goal, it's wrong.
-
 ---
 
-LANGUAGE — follow strictly:
-- Write like you're texting a friend. Short sentences. Simple words.
-- NEVER use: "leverage", "implement", "utilise", "optimal", "actionable", "facilitate", "enhance", "cultivate", "embark", "focus on", "work on", "explore", "look into", "delve".
-
-DOMAIN EXPERTISE — you are an expert, act like one:
-- Muscle/fitness → real exercise names (bench press, squat, deadlift, pull-up, row), actual sets × reps, protein grams based on their body weight, rest days
-- Language learning → specific apps (Duolingo, Anki), grammar topics by name, exact vocab counts per day
-- Business/income → specific platforms, real tactics (cold outreach, SEO, paid ads), actual revenue milestones
-- Coding/tech → specific languages, tutorials by name, real projects to build
-- Other goals → same level of specificity — never give advice that could apply to any goal
-
-TASK TITLES — 6–10 words, action first:
-- BAD: "Exercise" / "Work on nutrition" / "Study language"
-- GOOD: "Do 3×8 bench press at 60% of max weight" / "Eat 160g protein across 4 meals today" / "Learn 20 Anki cards on present tense verbs"
-
-IMPLEMENTATION INTENTIONS (proven to double completion rates):
-- Start every task description with a habit anchor: "After [existing daily habit], [do the task]."
-- Pick anchors that fit the task naturally: gym/exercise → "After waking up" or "After work"; study/reading → "After dinner" or "During your lunch break"; tracking/logging → "Before bed".
-- Follow the anchor with one sentence on exactly what to do.
-- Example: "After breakfast, open Stronglifts and log today's session. Do 3 sets of 5 squats at your starting weight — this sets your baseline for progressive overload."
-
-PROGRESS PRINCIPLE (small wins drive long-term motivation):
-- Days 1, 2, and 3 must be "quick win" tasks: under 15 minutes, near-certain to succeed, but genuinely meaningful to the goal. The person must feel real forward progress from day one.
-- End every task description with one short sentence on why it matters: "This [gives you X / builds Y / sets up Z]."
-- Respect their available time from their answers when setting estimatedMinutes.
+Here is an example of a high-quality roadmap for this goal type. Match this level of detail and tone — but use the user's actual numbers and situation above, not the example's:
+${categoryTemplate}
+---
 
 Build:
 1. 2–3 phases covering the full timeline
-2. Weekly focus for each phase
-3. Daily tasks for the first 15 days only
+2. REQUIRED: every phase MUST have a "weeks" array with at least 2 entries. A phase with no "weeks" is invalid and will be rejected. Every week entry must have "weekNumber" (integer) and "focus" (string).
+3. Daily tasks for this week only (7 days: ${today} → ${weekEnd}) — follow the weekly rhythm from the example template. Repeat the pattern (e.g. training day → rest day → training day) across all 7 days using the user's actual frequency from their constraints above. Do not invent random new task types after day 4.
 
-Respond ONLY with valid JSON (no markdown, no code blocks):
 {
   "phases": [
     {
@@ -234,16 +356,16 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
     // Initial: Flash → Groq
     let aiText: string;
     try {
-      aiText = await callGemini(prompt, 16384, primaryModel, thinkingBudget);
+      aiText = await callGemini(roadmapSystemPrompt, roadmapUserPrompt, 16384, primaryModel, thinkingBudget);
     } catch (err) {
       if (err.message === 'RATE_LIMITED') {
-        aiText = await callGroq(prompt, 16384);
+        aiText = await callGroq(roadmapSystemPrompt, roadmapUserPrompt, 16384);
       } else if (useDeepThink) {
         // Pro not available — fall back to Flash with reduced thinking budget
         try {
-          aiText = await callGemini(prompt, 16384, 'gemini-2.5-flash', 4096);
+          aiText = await callGemini(roadmapSystemPrompt, roadmapUserPrompt, 16384, 'gemini-2.5-flash', 4096);
         } catch {
-          aiText = await callGroq(prompt, 16384);
+          aiText = await callGroq(roadmapSystemPrompt, roadmapUserPrompt, 16384);
         }
       } else {
         throw new Error('Failed to generate roadmap. Please try again.');
