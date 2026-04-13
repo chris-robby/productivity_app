@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,25 +7,21 @@ import {
   StyleSheet,
   ScrollView,
   KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { addWeeks, addMonths, addYears, format } from 'date-fns';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useConversationStore, TaskEntry } from '../store/conversationStore';
-import { useTheme } from '../contexts/ThemeContext';
+import { useThemedStyles } from '../hooks/useThemedStyles';
 import { ColorPalette } from '../constants/colors';
 import { ScreenFooter } from '../components/ScreenFooter';
 import { DAYS, ALL_DAYS } from '../constants/days';
 
 type Step = 'tasks' | 'timeline';
-
-const TIMELINE_OPTIONS = [
-  { label: '1 month', months: 1 },
-  { label: '3 months', months: 3 },
-  { label: '6 months', months: 6 },
-  { label: '1 year', months: 12 },
-];
+type TimelineUnit = 'weeks' | 'months' | 'years';
 
 const FIRST_PLACEHOLDER = 'e.g. Go for a 30-minute run';
 
@@ -36,13 +32,25 @@ function newTask(): TaskEntry {
 export default function HabitSetupScreen() {
   const [step, setStep] = useState<Step>('tasks');
   const [tasks, setTasks] = useState<TaskEntry[]>([newTask(), newTask(), newTask()]);
-  const [timelineMonths, setTimelineMonths] = useState(3);
+  const [timelineValue, setTimelineValue] = useState('');
+  const [timelineUnit, setTimelineUnit] = useState<TimelineUnit>('months');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const timelineNum = parseInt(timelineValue, 10) || 0;
+  const timelineMonths =
+    timelineUnit === 'weeks' ? timelineNum / 4.33 :
+    timelineUnit === 'years' ? timelineNum * 12 :
+    timelineNum;
+  const targetDate =
+    timelineNum > 0
+      ? timelineUnit === 'weeks' ? addWeeks(new Date(), timelineNum)
+      : timelineUnit === 'years' ? addYears(new Date(), timelineNum)
+      : addMonths(new Date(), timelineNum)
+      : null;
 
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const { styles, colors } = useThemedStyles(getStyles);
 
   const goalText = useConversationStore((s) => s.goalText);
   const setTasksInStore = useConversationStore((s) => s.setTasks);
@@ -76,10 +84,11 @@ export default function HabitSetupScreen() {
   }
 
   function handleContinue() {
-    if (!canContinue) return;
     if (step === 'tasks') {
+      if (!canContinue) return;
       setStep('timeline');
     } else {
+      if (timelineNum <= 0) return;
       setTasksInStore(filledTasks);
       setTimelineInStore(timelineMonths);
       router.push('/journey-preview');
@@ -89,36 +98,66 @@ export default function HabitSetupScreen() {
   // ── Step 2: Timeline ──────────────────────────────────────────────────────
   if (step === 'timeline') {
     return (
-      <View style={styles.container}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.container}>
         <StatusBar style={colors.statusBar} />
         <View style={[styles.timelinePage, { paddingTop: insets.top + 24 }]}>
           <Text style={styles.timelineHeading}>When do you want to achieve this?</Text>
-          <View style={styles.timelineGrid}>
-            {TIMELINE_OPTIONS.map((opt) => (
+
+          {/* Number input */}
+          <View style={styles.timelineInputCard}>
+            <TextInput
+              style={styles.timelineInput}
+              value={timelineValue}
+              onChangeText={(t) => setTimelineValue(t.replace(/[^0-9]/g, ''))}
+              keyboardType="number-pad"
+              maxLength={3}
+              placeholder="0"
+              placeholderTextColor={colors.placeholder}
+              textAlign="center"
+              autoFocus
+            />
+          </View>
+
+          {/* Unit toggle */}
+          <View style={styles.unitToggle}>
+            {(['weeks', 'months', 'years'] as TimelineUnit[]).map((unit) => (
               <TouchableOpacity
-                key={opt.months}
-                style={[styles.timelineCard, timelineMonths === opt.months && styles.timelineCardActive]}
-                onPress={() => setTimelineMonths(opt.months)}
+                key={unit}
+                style={[styles.unitBtn, timelineUnit === unit && styles.unitBtnActive]}
+                onPress={() => setTimelineUnit(unit)}
               >
-                <Text style={[styles.timelineCardText, timelineMonths === opt.months && styles.timelineCardTextActive]}>
-                  {opt.label}
+                <Text style={[styles.unitBtnText, timelineUnit === unit && styles.unitBtnTextActive]}>
+                  {unit.charAt(0).toUpperCase() + unit.slice(1)}
                 </Text>
               </TouchableOpacity>
             ))}
           </View>
+
+          {/* Live target date */}
+          {targetDate && (
+            <Text style={styles.targetDateText}>
+              Goal date: {format(targetDate, 'MMMM d, yyyy')}
+            </Text>
+          )}
         </View>
+
         <ScreenFooter onBack={() => setStep('tasks')}>
-          <TouchableOpacity style={styles.continueBtn} onPress={handleContinue}>
-            <Text style={styles.continueBtnText}>Preview →</Text>
+          <TouchableOpacity
+            style={[styles.continueBtn, timelineNum <= 0 && styles.continueBtnDisabled]}
+            onPress={handleContinue}
+            disabled={timelineNum <= 0}
+          >
+            <Text style={styles.continueBtnText}>Preview</Text>
+            <Ionicons name="arrow-forward" size={15} color="#FFFFFF" />
           </TouchableOpacity>
         </ScreenFooter>
-      </View>
+      </KeyboardAvoidingView>
     );
   }
 
   // ── Step 1: Tasks ─────────────────────────────────────────────────────────
   return (
-    <KeyboardAvoidingView behavior="padding" style={styles.container}>
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.container}>
       <StatusBar style={colors.statusBar} />
 
       <ScrollView
@@ -144,9 +183,9 @@ export default function HabitSetupScreen() {
             const hasDays = task.days.length > 0;
 
             return (
-              <View key={task.id}>
+              <View key={task.id} style={styles.taskCard}>
                 <View style={styles.row}>
-                  {/* Square checkbox — decorative, shows this is a checklist */}
+                  {/* Checkbox — matches home screen style */}
                   <View style={styles.checkbox} />
 
                   {/* Input */}
@@ -187,7 +226,7 @@ export default function HabitSetupScreen() {
                   )}
                 </View>
 
-                {/* Days selector */}
+                {/* Days selector — expands inside the card */}
                 {isExpanded && (
                   <View style={styles.daysRow}>
                     {DAYS.map((d) => (
@@ -217,8 +256,6 @@ export default function HabitSetupScreen() {
                     </TouchableOpacity>
                   </View>
                 )}
-
-                <View style={styles.rowDivider} />
               </View>
             );
           })}
@@ -240,7 +277,8 @@ export default function HabitSetupScreen() {
           onPress={handleContinue}
           disabled={!canContinue}
         >
-          <Text style={styles.continueBtnText}>Continue →</Text>
+          <Text style={styles.continueBtnText}>Continue</Text>
+          <Ionicons name="arrow-forward" size={15} color="#FFFFFF" />
         </TouchableOpacity>
       </ScreenFooter>
     </KeyboardAvoidingView>
@@ -251,7 +289,7 @@ function getStyles(colors: ColorPalette) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     scroll: { flex: 1 },
-    scrollInner: { paddingHorizontal: 24 },
+    scrollInner: { paddingHorizontal: 20 },
 
     goalLabel: {
       fontSize: 11,
@@ -277,23 +315,32 @@ function getStyles(colors: ColorPalette) {
     list: {
       marginBottom: 8,
     },
+    taskCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      marginBottom: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
     row: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingVertical: 14,
+      paddingHorizontal: 18,
+      paddingVertical: 16,
       gap: 12,
     },
     checkbox: {
-      width: 20,
-      height: 20,
+      width: 24,
+      height: 24,
       borderRadius: 0,
-      borderWidth: 1.5,
-      borderColor: colors.border,
+      borderWidth: 2,
+      borderColor: colors.primary,
       flexShrink: 0,
     },
     rowInput: {
       flex: 1,
-      fontSize: 15,
+      fontSize: 16,
+      fontWeight: '500',
       color: colors.text,
       paddingVertical: 0,
       lineHeight: 22,
@@ -314,24 +361,20 @@ function getStyles(colors: ColorPalette) {
     actionBtnActive: {
       backgroundColor: colors.primary,
     },
-    rowDivider: {
-      height: 1,
-      backgroundColor: colors.border,
-      opacity: 0.5,
-    },
 
     // ── Days selector ─────────────────────────────────────────────────────────
     daysRow: {
       flexDirection: 'row',
       flexWrap: 'wrap',
       gap: 6,
-      paddingBottom: 12,
-      paddingLeft: 32,
+      paddingHorizontal: 18,
+      paddingBottom: 14,
+      paddingLeft: 54,
     },
     dayChip: {
       paddingHorizontal: 10,
       paddingVertical: 5,
-      borderRadius: 0,
+      borderRadius: 6,
       borderWidth: 1,
       borderColor: colors.border,
     },
@@ -357,7 +400,6 @@ function getStyles(colors: ColorPalette) {
       alignItems: 'center',
       gap: 6,
       paddingVertical: 16,
-      paddingLeft: 32,
     },
     addBtnText: {
       fontSize: 14,
@@ -367,12 +409,15 @@ function getStyles(colors: ColorPalette) {
 
     // ── Continue button ───────────────────────────────────────────────────────
     continueBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
       backgroundColor: colors.primary,
       paddingHorizontal: 24,
       paddingVertical: 14,
-      borderRadius: 0,
+      borderRadius: 12,
       minWidth: 140,
-      alignItems: 'center',
+      justifyContent: 'center',
     },
     continueBtnDisabled: { opacity: 0.4 },
     continueBtnText: { color: colors.textOnPrimary, fontSize: 15, fontWeight: '600' },
@@ -380,39 +425,59 @@ function getStyles(colors: ColorPalette) {
     // ── Timeline page ─────────────────────────────────────────────────────────
     timelinePage: {
       flex: 1,
-      paddingHorizontal: 24,
+      paddingHorizontal: 20,
       justifyContent: 'center',
     },
     timelineHeading: {
       fontSize: 24,
       fontWeight: '700',
       color: colors.text,
-      marginBottom: 32,
+      marginBottom: 28,
     },
-    timelineGrid: {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      gap: 12,
+    timelineInputCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.border,
+      marginBottom: 16,
     },
-    timelineCard: {
-      width: '45%',
+    timelineInput: {
+      fontSize: 52,
+      fontWeight: '700',
+      color: colors.text,
       paddingVertical: 28,
+      textAlign: 'center',
+    },
+    unitToggle: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 24,
+    },
+    unitBtn: {
+      flex: 1,
+      paddingVertical: 14,
+      alignItems: 'center',
       borderWidth: 1.5,
       borderColor: colors.border,
       backgroundColor: colors.surface,
-      alignItems: 'center',
+      borderRadius: 12,
     },
-    timelineCardActive: {
+    unitBtnActive: {
       backgroundColor: colors.primary,
       borderColor: colors.primary,
     },
-    timelineCardText: {
-      fontSize: 16,
+    unitBtnText: {
+      fontSize: 14,
       fontWeight: '600',
       color: colors.textSecondary,
     },
-    timelineCardTextActive: {
+    unitBtnTextActive: {
       color: colors.textOnPrimary,
+    },
+    targetDateText: {
+      fontSize: 14,
+      color: colors.textSecondary,
+      textAlign: 'center',
     },
   });
 }

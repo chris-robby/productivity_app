@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,10 +10,10 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { supabase } from '../lib/supabase';
-import { useTheme } from '../contexts/ThemeContext';
+import { getAllGoals } from '../services/database/adapter';
+import { useThemedStyles } from '../hooks/useThemedStyles';
 import { ColorPalette } from '../constants/colors';
+import { ScreenHeader } from '../components/ScreenHeader';
 import { Goal } from '../types';
 
 export default function GoalOverviewScreen() {
@@ -21,9 +21,7 @@ export default function GoalOverviewScreen() {
   const [loading, setLoading] = useState(true);
   const [goals, setGoals] = useState<Goal[]>([]);
 
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
-  const insets = useSafeAreaInsets();
+  const { styles, colors } = useThemedStyles(getStyles);
 
   useFocusEffect(
     useCallback(() => {
@@ -34,12 +32,8 @@ export default function GoalOverviewScreen() {
   async function loadGoals() {
     setLoading(true);
     try {
-      const { data } = await supabase
-        .from('goals')
-        .select('*')
-        .eq('status', 'active')
-        .order('created_at');
-      setGoals((data as Goal[]) ?? []);
+      const all = await getAllGoals();
+      setGoals(all.filter((g) => g.status === 'active'));
     } finally {
       setLoading(false);
     }
@@ -57,18 +51,7 @@ export default function GoalOverviewScreen() {
   return (
     <View style={styles.container}>
       <StatusBar style={colors.statusBar} />
-
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          style={styles.backButton}
-        >
-          <Ionicons name="arrow-back" size={24} color={colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Goals</Text>
-        <View style={{ width: 24 }} />
-      </View>
+      <ScreenHeader title="Goals" />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {goals.length === 0 ? (
@@ -116,24 +99,6 @@ function getStyles(colors: ColorPalette) {
       alignItems: 'center',
       backgroundColor: colors.background,
     },
-    header: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: 16,
-      paddingBottom: 14,
-      backgroundColor: colors.surface,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.border,
-    },
-    backButton: {
-      width: 24,
-    },
-    headerTitle: {
-      fontSize: 18,
-      fontWeight: '700',
-      color: colors.text,
-    },
     content: {
       flex: 1,
       paddingTop: 12,
@@ -146,16 +111,15 @@ function getStyles(colors: ColorPalette) {
       fontSize: 15,
       color: colors.textSecondary,
     },
-
     goalCard: {
       flexDirection: 'row',
       alignItems: 'center',
       backgroundColor: colors.surface,
-      marginHorizontal: 16,
+      marginHorizontal: 20,
       marginBottom: 10,
       paddingVertical: 18,
       paddingHorizontal: 20,
-      borderRadius: 14,
+      borderRadius: 12,
     },
     goalText: {
       flex: 1,
@@ -165,17 +129,15 @@ function getStyles(colors: ColorPalette) {
       lineHeight: 22,
       marginRight: 10,
     },
-
-    // ── Add button ────────────────────────────────────────────────────────────
     addGoalBtn: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
       gap: 8,
-      marginHorizontal: 16,
+      marginHorizontal: 20,
       marginTop: 8,
       paddingVertical: 16,
-      borderRadius: 14,
+      borderRadius: 12,
       borderWidth: 1.5,
       borderColor: colors.primary,
       borderStyle: 'dashed',
@@ -185,6 +147,5 @@ function getStyles(colors: ColorPalette) {
       fontWeight: '600',
       color: colors.primary,
     },
-
   });
 }

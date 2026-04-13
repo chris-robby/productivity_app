@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,16 +7,24 @@ import {
   TextInput,
   StyleSheet,
   Alert,
+  DimensionValue,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../lib/supabase';
-import { useAppStore } from '../../store';
-import { useTheme } from '../../contexts/ThemeContext';
+import { useTier } from '../../store/tierStore';
+import { useThemedStyles } from '../../hooks/useThemedStyles';
 import { ColorPalette } from '../../constants/colors';
 import { updateUserSettings } from '../../services/database/settings';
+import {
+  getActiveGoal,
+  updateGoalContext,
+  updateGoalStatus,
+  saveThemeLocally,
+} from '../../services/database/adapter';
+import { PaywallSheet } from '../../components/PaywallSheet';
 
 interface ActiveGoal {
   id: string;
@@ -39,50 +47,65 @@ export default function ProfileScreen() {
   const [editingContext, setEditingContext] = useState(false);
   const [contextValue, setContextValue] = useState('');
   const [savingContext, setSavingContext] = useState(false);
+  const [showPaywall, setShowPaywall] = useState(false);
 
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const isDemoMode = useAppStore((state) => state.isDemoMode);
-  const { colors, theme, setTheme } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const { isFree, isPremium } = useTier();
+  const { styles, colors, theme, setTheme } = useThemedStyles(getStyles);
 
   useFocusEffect(
     useCallback(() => {
-      if (!isDemoMode) loadData();
-    }, [isDemoMode])
+      loadData();
+    }, [isFree])
   );
 
   async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) setEmail(user.email || '');
+    if (isPremium) {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) setEmail(user.email || '');
 
-    const { data: goalData } = await supabase
-      .from('goals')
-      .select('id, goal_text, total_tasks, completed_tasks, target_date, user_context')
-      .eq('status', 'active')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      const { data: goalData } = await supabase
+        .from('goals')
+        .select('id, goal_text, total_tasks, completed_tasks, target_date, user_context')
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (goalData) {
-      setGoal(goalData);
-      setContextValue(goalData.user_context || '');
-
-      const { data: tasks } = await supabase
-        .from('daily_tasks')
-        .select('task_title, completed_at')
-        .eq('goal_id', goalData.id)
-        .eq('completed', true)
-        .order('completed_at', { ascending: false })
-        .limit(5);
-      setRecentTasks(tasks || []);
+      if (goalData) {
+        setGoal(goalData);
+        setContextValue(goalData.user_context || '');
+        const { data: tasks } = await supabase
+          .from('daily_tasks')
+          .select('task_title, completed_at')
+          .eq('goal_id', goalData.id)
+          .eq('completed', true)
+          .order('completed_at', { ascending: false })
+          .limit(5);
+        setRecentTasks(tasks || []);
+      }
+    } else {
+      // Free tier — load from SQLite via adapter
+      const goalData = await getActiveGoal();
+      if (goalData) {
+        setGoal({
+          id: goalData.id,
+          goal_text: goalData.goal_text,
+          total_tasks: goalData.total_tasks,
+          completed_tasks: goalData.completed_tasks,
+          target_date: goalData.target_date,
+          user_context: goalData.user_context,
+        });
+        setContextValue(goalData.user_context || '');
+      }
     }
   }
 
   async function handleSaveContext() {
     if (!goal) return;
     setSavingContext(true);
-    await supabase.from('goals').update({ user_context: contextValue }).eq('id', goal.id);
+    await updateGoalContext(goal.id, contextValue);
     setGoal((g) => g ? { ...g, user_context: contextValue } : g);
     setSavingContext(false);
     setEditingContext(false);
@@ -91,7 +114,9 @@ export default function ProfileScreen() {
   async function handleToggleTheme() {
     const newTheme = theme === 'dark' ? 'light' : 'dark';
     setTheme(newTheme);
-    if (!isDemoMode) {
+    if (isFree) {
+      await saveThemeLocally(newTheme);
+    } else {
       try { await updateUserSettings({ theme: newTheme }); } catch (error) {
         console.error('Failed to save theme preference:', error);
       }
@@ -118,9 +143,7 @@ export default function ProfileScreen() {
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Continue', style: 'destructive', onPress: async () => {
-            if (goal) {
-              await supabase.from('goals').update({ status: 'abandoned' }).eq('id', goal.id);
-            }
+            if (goal) await updateGoalStatus(goal.id, 'abandoned');
             router.replace('/goal-setup');
           },
         },
@@ -128,7 +151,7 @@ export default function ProfileScreen() {
     );
   }
 
-  const initials = email ? email[0].toUpperCase() : '?';
+  const initials = email ? email[0].toUpperCase() : isFree ? 'F' : '?';
   const total = goal?.total_tasks ?? 0;
   const done = goal?.completed_tasks ?? 0;
   const progressPct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -139,6 +162,7 @@ export default function ProfileScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <StatusBar style={colors.statusBar} />
+      <PaywallSheet visible={showPaywall} onClose={() => setShowPaywall(false)} />
 
       <ScrollView
         style={styles.scroll}
@@ -150,8 +174,22 @@ export default function ProfileScreen() {
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>{initials}</Text>
           </View>
-          <Text style={styles.emailText}>{email || 'Demo User'}</Text>
+          <Text style={styles.emailText}>
+            {isFree ? 'Free User' : email}
+          </Text>
         </View>
+
+        {/* ── Upgrade CTA (free only) ─────────────────────────────────── */}
+        {isFree && (
+          <TouchableOpacity style={styles.upgradeCard} onPress={() => setShowPaywall(true)}>
+            <Ionicons name="sparkles" size={18} color={colors.textOnPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.upgradeCardTitle}>Unlock Premium</Text>
+              <Text style={styles.upgradeCardSub}>AI coaching, roadmaps, and cloud sync</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={colors.textOnPrimary} />
+          </TouchableOpacity>
+        )}
 
         {/* ── Goal progress ───────────────────────────────────────────────── */}
         {goal ? (
@@ -160,7 +198,7 @@ export default function ProfileScreen() {
             <Text style={styles.goalText} numberOfLines={2}>{goal.goal_text}</Text>
 
             <View style={styles.progressTrack}>
-              <View style={[styles.progressFill, { width: `${progressPct}%` as any }]} />
+              <View style={[styles.progressFill, { width: `${progressPct}%` as DimensionValue }]} />
             </View>
 
             <View style={styles.progressMeta}>
@@ -180,57 +218,59 @@ export default function ProfileScreen() {
         )}
 
         {/* ── About You ───────────────────────────────────────────────────── */}
-        <View style={styles.card}>
-          <View style={styles.cardHeaderRow}>
-            <Text style={styles.cardLabel}>ABOUT YOU</Text>
-            {!editingContext && (
-              <TouchableOpacity onPress={() => setEditingContext(true)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Ionicons name="pencil-outline" size={16} color={colors.textSecondary} />
-              </TouchableOpacity>
+        {isPremium && (
+          <View style={styles.card}>
+            <View style={styles.cardHeaderRow}>
+              <Text style={styles.cardLabel}>ABOUT YOU</Text>
+              {!editingContext && (
+                <TouchableOpacity onPress={() => setEditingContext(true)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name="pencil-outline" size={16} color={colors.textSecondary} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {editingContext ? (
+              <>
+                <TextInput
+                  style={styles.contextInput}
+                  value={contextValue}
+                  onChangeText={setContextValue}
+                  multiline
+                  placeholder="Tell the AI about yourself — your schedule, experience, constraints..."
+                  placeholderTextColor={colors.placeholder}
+                  autoFocus
+                />
+                <View style={styles.contextActions}>
+                  <TouchableOpacity
+                    style={styles.cancelBtn}
+                    onPress={() => {
+                      setContextValue(goal?.user_context || '');
+                      setEditingContext(false);
+                    }}
+                  >
+                    <Text style={styles.cancelBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.saveBtn} onPress={handleSaveContext} disabled={savingContext}>
+                    <Text style={styles.saveBtnText}>{savingContext ? 'Saving…' : 'Save'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <Text style={styles.contextText}>
+                {contextValue
+                  ? contextValue
+                  : 'Add context about yourself — this helps the AI give you more relevant suggestions.'}
+              </Text>
             )}
           </View>
-
-          {editingContext ? (
-            <>
-              <TextInput
-                style={styles.contextInput}
-                value={contextValue}
-                onChangeText={setContextValue}
-                multiline
-                placeholder="Tell the AI about yourself — your schedule, experience, constraints..."
-                placeholderTextColor={colors.placeholder}
-                autoFocus
-              />
-              <View style={styles.contextActions}>
-                <TouchableOpacity
-                  style={styles.cancelBtn}
-                  onPress={() => {
-                    setContextValue(goal?.user_context || '');
-                    setEditingContext(false);
-                  }}
-                >
-                  <Text style={styles.cancelBtnText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.saveBtn} onPress={handleSaveContext} disabled={savingContext}>
-                  <Text style={styles.saveBtnText}>{savingContext ? 'Saving…' : 'Save'}</Text>
-                </TouchableOpacity>
-              </View>
-            </>
-          ) : (
-            <Text style={styles.contextText}>
-              {contextValue
-                ? contextValue
-                : 'Add context about yourself — this helps the AI give you more relevant suggestions.'}
-            </Text>
-          )}
-        </View>
+        )}
 
         {/* ── Recent wins ─────────────────────────────────────────────────── */}
         {recentTasks.length > 0 && (
           <View style={styles.card}>
             <Text style={styles.cardLabel}>RECENT WINS</Text>
             {recentTasks.map((t, i) => (
-              <View key={i} style={styles.winRow}>
+              <View key={`${t.task_title}-${t.completed_at ?? i}`} style={styles.winRow}>
                 <View style={styles.winDot} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.winTitle}>{t.task_title}</Text>
@@ -261,10 +301,37 @@ export default function ProfileScreen() {
             <Ionicons name="chevron-forward" size={16} color={colors.border} />
           </TouchableOpacity>
 
-          <TouchableOpacity style={[styles.settingRow, styles.logoutRow]} onPress={handleLogout}>
-            <Ionicons name="log-out-outline" size={18} color={colors.error} />
-            <Text style={[styles.settingRowLabel, styles.logoutLabel]}>Logout</Text>
-          </TouchableOpacity>
+          {isPremium && (
+            <TouchableOpacity style={[styles.settingRow, styles.logoutRow]} onPress={handleLogout}>
+              <Ionicons name="log-out-outline" size={18} color={colors.error} />
+              <Text style={[styles.settingRowLabel, styles.logoutLabel]}>Logout</Text>
+            </TouchableOpacity>
+          )}
+
+          {isFree && (
+            <TouchableOpacity
+              style={[styles.settingRow, styles.logoutRow]}
+              onPress={() =>
+                Alert.alert(
+                  'Clear All Data',
+                  'This will delete all your goals and tasks. This cannot be undone.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Clear', style: 'destructive', onPress: async () => {
+                        const { clearAllLocalData } = await import('../../services/database/adapter');
+                        clearAllLocalData();
+                        router.replace('/(tabs)');
+                      },
+                    },
+                  ]
+                )
+              }
+            >
+              <Ionicons name="trash-outline" size={18} color={colors.error} />
+              <Text style={[styles.settingRowLabel, styles.logoutLabel]}>Clear All Data</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </ScrollView>
     </View>
@@ -279,6 +346,28 @@ function getStyles(colors: ColorPalette) {
     },
     scroll: { flex: 1 },
     scrollInner: { paddingHorizontal: 20 },
+
+    // ── Upgrade card ─────────────────────────────────────────────────────────
+    upgradeCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      backgroundColor: colors.primary,
+      borderRadius: 16,
+      padding: 16,
+      marginBottom: 16,
+    },
+    upgradeCardTitle: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.textOnPrimary,
+    },
+    upgradeCardSub: {
+      fontSize: 12,
+      color: colors.textOnPrimary,
+      opacity: 0.8,
+      marginTop: 2,
+    },
 
     // ── Avatar ───────────────────────────────────────────────────────────────
     avatarSection: {

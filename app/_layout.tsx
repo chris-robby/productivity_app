@@ -11,13 +11,16 @@ import {
 import { supabase } from '../lib/supabase';
 import { useRouter } from 'expo-router';
 import { useAppStore } from '../store';
+import { useTierStore } from '../store/tierStore';
 import { ThemeProvider } from '../contexts/ThemeContext';
 import { getUserSettings } from '../services/database/settings';
+import { initLocalDb, getActiveGoal, loadThemeLocally } from '../services/database/adapter';
 
 export default function RootLayout() {
   const router = useRouter();
-  const isDemoMode = useAppStore((state) => state.isDemoMode);
   const setTheme = useAppStore((state) => state.setTheme);
+  const hydrateTier = useTierStore((s) => s.hydrate);
+  const tierHydrated = useTierStore((s) => s.hydrated);
 
   const [fontsLoaded] = useFonts({
     Inter_400Regular,
@@ -27,26 +30,54 @@ export default function RootLayout() {
   });
 
   useEffect(() => {
-    if (isDemoMode) return;
+    async function init() {
+      await hydrateTier();
+      const tier = useTierStore.getState().tier;
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!session && !useAppStore.getState().isDemoMode) {
+      // Fresh install or new device — show login so existing users can sign in
+      if (tier === null) {
         router.replace('/auth/login');
         return;
       }
-      if (session) {
-        const settings = await getUserSettings();
-        const savedTheme = settings?.theme;
-        setTheme(savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'dark');
+
+      if (tier === 'free') {
+        // Free users: init SQLite, restore theme from AsyncStorage, route by goal state
+        initLocalDb();
+        const savedTheme = await loadThemeLocally();
+        if (savedTheme) setTheme(savedTheme);
+        const goal = await getActiveGoal();
+        router.replace(goal ? '/(tabs)' : '/goal-setup');
+        return;
       }
-    }).catch((error) => {
-      console.error('Failed to restore session:', error);
-      router.replace('/auth/login');
-    });
+
+      // Premium — check existing Supabase session
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          router.replace('/auth/login');
+          return;
+        }
+        try {
+          const settings = await getUserSettings();
+          const savedTheme = settings?.theme;
+          setTheme(savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'dark');
+        } catch {
+          // Theme is non-critical — keep default if settings fail to load
+        }
+        router.replace('/(tabs)');
+      } catch {
+        router.replace('/auth/login');
+      }
+    }
+    init();
+  }, []);
+
+  useEffect(() => {
+    if (!tierHydrated || useTierStore.getState().tier !== 'premium') return;
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (_event, session) => {
-        if (!session && !useAppStore.getState().isDemoMode) {
+        if (!session) {
           router.replace('/auth/login');
           return;
         }
@@ -59,9 +90,9 @@ export default function RootLayout() {
     );
 
     return () => subscription.unsubscribe();
-  }, [isDemoMode]);
+  }, [tierHydrated]);
 
-  if (!fontsLoaded) {
+  if (!fontsLoaded || !tierHydrated) {
     return <View style={{ flex: 1, backgroundColor: '#0a0a0a' }} />;
   }
 
@@ -79,6 +110,7 @@ export default function RootLayout() {
         <Stack.Screen name="goal-detail" />
         <Stack.Screen name="journey" />
         <Stack.Screen name="journey-preview" />
+        <Stack.Screen name="upgrade" />
       </Stack>
     </ThemeProvider>
   );

@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -18,14 +18,14 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { useTaskStore } from '../../store/taskStore';
 import { useGoalStore } from '../../store/goalStore';
 import { useConversationStore } from '../../store/conversationStore';
+import { useTierStore } from '../../store/tierStore';
 import { format } from 'date-fns';
-import { supabase } from '../../lib/supabase';
-import { useTheme } from '../../contexts/ThemeContext';
+import { getAllGoals } from '../../services/database/adapter';
+import { useThemedStyles } from '../../hooks/useThemedStyles';
 import { ColorPalette } from '../../constants/colors';
 import { LeftSidebar } from '../../components/LeftSidebar';
 import { Goal } from '../../types';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-
 
 export default function TodayScreen() {
   const router = useRouter();
@@ -40,9 +40,8 @@ export default function TodayScreen() {
   const [goalsLoaded, setGoalsLoaded] = useState(false);
   const [goalInputText, setGoalInputText] = useState('');
 
-  const { colors } = useTheme();
+  const { styles, colors } = useThemedStyles(getStyles);
   const insets = useSafeAreaInsets();
-  const styles = useMemo(() => getStyles(colors), [colors]);
 
   const todaysTasks = useTaskStore((state) => state.todaysTasks);
   const loadTodaysTasks = useTaskStore((state) => state.loadTodaysTasks);
@@ -57,17 +56,13 @@ export default function TodayScreen() {
   );
 
   async function loadActiveGoals() {
+    setGoalsLoaded(false);
     try {
-      const { data: goals, error } = await supabase
-        .from('goals')
-        .select('*')
-        .eq('status', 'active')
-        .order('created_at');
+      const allGoals = await getAllGoals();
+      const goals = allGoals.filter((g) => g.status === 'active');
 
-      if (error) throw error;
-
-      if (goals && goals.length > 0) {
-        setActiveGoals(goals as Goal[]);
+      if (goals.length > 0) {
+        setActiveGoals(goals);
         useGoalStore.getState().setCurrentGoal(goals[0]);
         await useGoalStore.getState().loadGoal(goals[0].id);
       } else {
@@ -85,7 +80,8 @@ export default function TodayScreen() {
     if (!goalInputText.trim()) return;
     useConversationStore.getState().reset();
     useConversationStore.getState().setGoalText(goalInputText.trim());
-    router.push('/habit-setup');
+    const isFree = useTierStore.getState().tier === 'free';
+    router.push(isFree ? '/habit-setup' : '/conversation');
   }
 
   async function onRefresh() {
@@ -175,12 +171,6 @@ export default function TodayScreen() {
 
   const reasonTask = todaysTasks.find((t) => t.id === reasonTaskId);
 
-  // Header subtitle: single goal shows trimmed text, multiple goals shows count
-  const headerGoalLabel =
-    activeGoals.length > 1
-      ? `${activeGoals.length} goals active`
-      : activeGoals[0]?.goal_text ?? null;
-
   // ─── Reason dialog ────────────────────────────────────────────────────────
   const reasonSheet = (
     <Modal
@@ -259,13 +249,6 @@ export default function TodayScreen() {
             <Text style={styles.headerDate}>
               {format(new Date(), 'EEEE, MMMM d')}
             </Text>
-            {headerGoalLabel && (
-              <TouchableOpacity onPress={() => router.push('/goal-overview')} activeOpacity={0.7}>
-                <Text style={styles.headerGoal} numberOfLines={1}>
-                  {headerGoalLabel}
-                </Text>
-              </TouchableOpacity>
-            )}
           </View>
         </View>
       </View>
@@ -314,9 +297,7 @@ export default function TodayScreen() {
                   {/* Task info — tap to expand */}
                   <TouchableOpacity
                     style={styles.taskContent}
-                    onPress={() =>
-                      setExpandedTaskId(isExpanded ? null : task.id)
-                    }
+                    onPress={() => setExpandedTaskId(isExpanded ? null : task.id)}
                     activeOpacity={0.7}
                   >
                     <Text
@@ -359,11 +340,7 @@ export default function TodayScreen() {
                       style={styles.notDoneBtn}
                       onPress={() => handleMarkNotDone(task.id)}
                     >
-                      <Ionicons
-                        name="close"
-                        size={20}
-                        color={colors.textSecondary}
-                      />
+                      <Ionicons name="close" size={20} color={colors.textSecondary} />
                     </TouchableOpacity>
                   )}
                 </View>
@@ -396,7 +373,7 @@ function getStyles(colors: ColorPalette) {
     },
     goalSetupCenter: {
       flex: 1,
-      paddingHorizontal: 28,
+      paddingHorizontal: 20,
       justifyContent: 'center',
       paddingBottom: 40,
     },
@@ -427,6 +404,7 @@ function getStyles(colors: ColorPalette) {
       backgroundColor: colors.primary,
       paddingVertical: 15,
       paddingHorizontal: 28,
+      borderRadius: 12,
     },
     goalSendBtnText: {
       fontSize: 15,
@@ -462,11 +440,6 @@ function getStyles(colors: ColorPalette) {
       color: colors.text,
       marginBottom: 2,
     },
-    headerGoal: {
-      fontSize: 12,
-      color: colors.primary,
-      fontWeight: '500',
-    },
 
     // ── Task list ───────────────────────────────────────────────────────────
     content: {
@@ -487,7 +460,7 @@ function getStyles(colors: ColorPalette) {
     taskCard: {
       backgroundColor: colors.surface,
       padding: 18,
-      borderRadius: 4,
+      borderRadius: 12,
       marginBottom: 14,
       flexDirection: 'row',
       alignItems: 'center',
@@ -518,6 +491,7 @@ function getStyles(colors: ColorPalette) {
       color: colors.text,
       marginBottom: 4,
     },
+    // fades the text colour when done/failed (no CSS strikethrough — animation handles it)
     taskTitleCompleted: {
       textDecorationLine: 'line-through',
       color: colors.textSecondary,

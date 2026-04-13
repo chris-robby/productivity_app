@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -19,7 +19,18 @@ import { Ionicons } from '@expo/vector-icons';
 import { suggestTasks, TaskSuggestion, regenerateRoadmap } from '../services/aiService';
 import { format, parseISO, addDays, eachDayOfInterval } from 'date-fns';
 import { supabase } from '../lib/supabase';
-import { useTheme } from '../contexts/ThemeContext';
+import {
+  getGoalById,
+  getHabitsForGoal,
+  getUpcomingTaskTitlesForGoal,
+  updateGoalText,
+  deleteGoal,
+  deleteHabitAndFutureTasks,
+  updateHabitSchedule,
+} from '../services/database/adapter';
+import { useTier } from '../store/tierStore';
+import { PaywallSheet } from '../components/PaywallSheet';
+import { useThemedStyles } from '../hooks/useThemedStyles';
 import { ColorPalette } from '../constants/colors';
 import { Goal, RoadmapPhase } from '../types';
 
@@ -54,6 +65,9 @@ export default function GoalDetailScreen() {
   const [deleteReason, setDeleteReason] = useState('');
   const [deleting, setDeleting] = useState(false);
 
+  // Paywall
+  const [showPaywall, setShowPaywall] = useState(false);
+
   // AI suggestions sheet
   const [showSuggest, setShowSuggest] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
@@ -68,11 +82,15 @@ export default function GoalDetailScreen() {
   const [habitEditDays, setHabitEditDays] = useState<number[]>([]);
   const [savingHabit, setSavingHabit] = useState(false);
 
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const { styles, colors } = useThemedStyles(getStyles);
+  const { isPremium } = useTier();
 
   async function handleReeval() {
     if (!goal) return;
+    if (!isPremium) {
+      setShowPaywall(true);
+      return;
+    }
     setShowSuggest(true);
     setLoadingSuggestions(true);
     setSuggestions([]);
@@ -97,6 +115,10 @@ export default function GoalDetailScreen() {
 
   async function handleAddSuggestion(suggestion: TaskSuggestion, idx: number) {
     if (!goal) return;
+    if (!isPremium) {
+      setShowPaywall(true);
+      return;
+    }
     setAddingIdx(idx);
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -155,13 +177,7 @@ export default function GoalDetailScreen() {
             if (!goal) return;
             try {
               const today = format(new Date(), 'yyyy-MM-dd');
-              await supabase
-                .from('daily_tasks')
-                .delete()
-                .eq('goal_id', goal.id)
-                .eq('task_title', habit.habit_text)
-                .gte('scheduled_date', today);
-              await supabase.from('habits').delete().eq('id', habit.id);
+              await deleteHabitAndFutureTasks(habit.id, goal.id, habit.habit_text, today);
               setHabits((prev) => prev.filter((h) => h.id !== habit.id));
               if (editingHabitId === habit.id) setEditingHabitId(null);
             } catch (err: any) {
@@ -178,32 +194,7 @@ export default function GoalDetailScreen() {
     setSavingHabit(true);
     try {
       const today = format(new Date(), 'yyyy-MM-dd');
-
-      await supabase
-        .from('daily_tasks')
-        .delete()
-        .eq('goal_id', goal.id)
-        .eq('task_title', habit.habit_text)
-        .gte('scheduled_date', today);
-
-      if (habitEditDays.length > 0) {
-        const startDate = new Date();
-        const taskRows = eachDayOfInterval({ start: startDate, end: addDays(startDate, 29) })
-          .filter((day) => habitEditDays.includes(day.getDay()))
-          .map((day) => ({
-            goal_id: goal.id,
-            task_title: habit.habit_text,
-            scheduled_date: format(day, 'yyyy-MM-dd'),
-            estimated_minutes: 0,
-            priority: 'medium',
-            completed: false,
-            failed: false,
-          }));
-        if (taskRows.length > 0) await supabase.from('daily_tasks').insert(taskRows);
-      }
-
-      await supabase.from('habits').update({ frequency_days: habitEditDays.length }).eq('id', habit.id);
-
+      await updateHabitSchedule(habit.id, goal.id, habit.habit_text, today, habitEditDays);
       setHabits((prev) => prev.map((h) => h.id === habit.id ? { ...h, days: habitEditDays } : h));
       setEditingHabitId(null);
     } catch (err: any) {
@@ -246,37 +237,29 @@ export default function GoalDetailScreen() {
     setEditingField(null);
 
     try {
-      // Save to Supabase
-      await supabase
-        .from('goals')
-        .update({ goal_text: newTitle, timeline_months: newTimeline })
-        .eq('id', goal.id);
+      await updateGoalText(goal.id, newTitle, newTimeline);
+      setGoal({ ...goal, goal_text: newTitle, timeline_months: newTimeline });
 
-      // Update local state so UI reflects the change immediately
-      const updatedGoal = { ...goal, goal_text: newTitle, timeline_months: newTimeline };
-      setGoal(updatedGoal);
+      if (isPremium) {
+        const changes: string[] = [];
+        if (editingField === 'title' && newTitle !== goal.goal_text)
+          changes.push(`Goal text updated to: "${newTitle}"`);
+        if (editingField === 'timeline' && newTimeline !== goal.timeline_months)
+          changes.push(`Timeline changed from ${goal.timeline_months} months to ${newTimeline} months`);
 
-      // Build a short context describing what changed
-      const changes: string[] = [];
-      if (editingField === 'title' && newTitle !== goal.goal_text)
-        changes.push(`Goal text updated to: "${newTitle}"`);
-      if (editingField === 'timeline' && newTimeline !== goal.timeline_months)
-        changes.push(`Timeline changed from ${goal.timeline_months} months to ${newTimeline} months`);
-      const preContext = changes.join('. ');
-
-      // Trigger AI roadmap regeneration directly — no primer/questions
-      const { goalId } = await regenerateRoadmap({
-        goalId: goal.id,
-        goal: newTitle,
-        timelineMonths: newTimeline,
-        context: {},
-        preContext,
-        userContext: goal.user_context ?? '',
-      });
-
-      router.push({ pathname: '/roadmap-preview', params: { goalId, reeval: 'true' } });
+        const { goalId } = await regenerateRoadmap({
+          goalId: goal.id,
+          goal: newTitle,
+          timelineMonths: newTimeline,
+          context: {},
+          preContext: changes.join('. '),
+          userContext: goal.user_context ?? '',
+        });
+        router.push({ pathname: '/roadmap-preview', params: { goalId, reeval: 'true' } });
+      }
     } catch (e) {
       console.error('Failed to update plan:', e);
+      Alert.alert('Error', 'Failed to save changes. Please try again.');
     } finally {
       setUpdatingPlan(false);
     }
@@ -286,15 +269,10 @@ export default function GoalDetailScreen() {
     if (!goal || !deleteReason.trim()) return;
     setDeleting(true);
     try {
-      // Hard delete — CASCADE removes all tasks, phases, snapshots, and failures
-      const { error } = await supabase
-        .from('goals')
-        .delete()
-        .eq('id', goal.id);
-
-      if (error) throw error;
-
+      await deleteGoal(goal.id);
       router.back();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to remove goal.');
     } finally {
       setDeleting(false);
     }
@@ -310,20 +288,24 @@ export default function GoalDetailScreen() {
     setLoading(true);
     try {
       const today = format(new Date(), 'yyyy-MM-dd');
-      const [{ data: goalData }, { data: phaseData }, { data: habitsData }, { data: futureTasks }] =
-        await Promise.all([
-          supabase.from('goals').select('*').eq('id', goalId).single(),
-          supabase.from('roadmap_phases').select('*').eq('goal_id', goalId).order('phase_number'),
-          supabase.from('habits').select('id, habit_text').eq('goal_id', goalId).order('created_at'),
-          supabase.from('daily_tasks').select('task_title, scheduled_date').eq('goal_id', goalId).gte('scheduled_date', today).limit(200),
-        ]);
 
-      if (goalData) setGoal(goalData as Goal);
+      const phasesPromise = isPremium
+        ? supabase.from('roadmap_phases').select('*').eq('goal_id', goalId).order('phase_number').then((r) => r.data)
+        : Promise.resolve(null);
+
+      const [goalData, habitsData, futureTasks, phaseData] = await Promise.all([
+        getGoalById(goalId),
+        getHabitsForGoal(goalId),
+        getUpcomingTaskTitlesForGoal(goalId, today),
+        phasesPromise,
+      ]);
+
+      if (goalData) setGoal(goalData);
       if (phaseData) setPhases(phaseData as RoadmapPhase[]);
 
-      if (habitsData) {
+      if (habitsData.length > 0) {
         const dayMap: Record<string, Set<number>> = {};
-        for (const t of futureTasks ?? []) {
+        for (const t of futureTasks) {
           const dow = new Date(t.scheduled_date + 'T00:00:00').getDay();
           if (!dayMap[t.task_title]) dayMap[t.task_title] = new Set();
           dayMap[t.task_title].add(dow);
@@ -782,6 +764,8 @@ export default function GoalDetailScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <PaywallSheet visible={showPaywall} onClose={() => setShowPaywall(false)} />
     </View>
   );
 }

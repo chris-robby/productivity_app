@@ -59,7 +59,7 @@ export interface DailyTask {
   original_date?: string;
   reschedule_reason?: string;
   created_at: string;
-  ai_context?: any;
+  ai_context?: Record<string, unknown>;
 }
 
 export interface TaskFailure {
@@ -96,7 +96,7 @@ export interface ProgressSnapshot {
   tasks_completed_today: number;
   completion_rate: number;
   total_failures_to_date: number;
-  common_failure_patterns: any;
+  common_failure_patterns: Record<string, unknown> | null;
   ai_confidence_score: number;
   created_at: string;
 }

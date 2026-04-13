@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -17,7 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useConversationStore } from '../store/conversationStore';
 import { fetchGoalQuestions, generateRoadmap, regenerateRoadmap } from '../services/aiService';
 import { supabase } from '../lib/supabase';
-import { useTheme } from '../contexts/ThemeContext';
+import { useThemedStyles } from '../hooks/useThemedStyles';
 import { ColorPalette } from '../constants/colors';
 import { ScreenFooter } from '../components/ScreenFooter';
 
@@ -36,9 +36,8 @@ export default function ConversationScreen() {
   const [primerNotes, setPrimerNotes] = useState('');
 
   const router = useRouter();
-  const { colors } = useTheme();
+  const { styles, colors } = useThemedStyles(getStyles);
   const insets = useSafeAreaInsets();
-  const styles = useMemo(() => getStyles(colors), [colors]);
 
   const goalText = useConversationStore((state) => state.goalText);
   const userContext = useConversationStore((state) => state.userContext);
@@ -339,7 +338,7 @@ export default function ConversationScreen() {
       <View style={[styles.progressContainer, { paddingTop: insets.top + 16 }]}>
         {questions.map((_, i) => (
           <View
-            key={i}
+            key={`step-${i}`}
             style={[
               styles.dot,
               i === currentIndex && styles.dotActive,

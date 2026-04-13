@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -12,8 +12,9 @@ import {
 import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { StatusBar } from 'expo-status-bar';
-import { useAppStore } from '../../store';
-import { useTheme } from '../../contexts/ThemeContext';
+import { useTierStore } from '../../store/tierStore';
+import { initLocalDb } from '../../services/database/adapter';
+import { useThemedStyles } from '../../hooks/useThemedStyles';
 import { ColorPalette } from '../../constants/colors';
 
 export default function LoginScreen() {
@@ -21,14 +22,13 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const setDemoMode = useAppStore((state) => state.setDemoMode);
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const setTier = useTierStore((s) => s.setTier);
+  const { styles, colors } = useThemedStyles(getStyles);
 
-  async function handleDemo() {
-    await supabase.auth.signOut();
-    setDemoMode(true);
-    router.replace('/(tabs)');
+  async function handleContinueFree() {
+    await setTier('free');
+    initLocalDb();
+    router.replace('/goal-setup');
   }
 
   async function handleLogin() {
@@ -46,6 +46,8 @@ export default function LoginScreen() {
       });
 
       if (error) throw error;
+
+      await setTier('premium');
 
       const { data: goals } = await supabase
         .from('goals')
@@ -73,7 +75,7 @@ export default function LoginScreen() {
       <StatusBar style={colors.statusBar} />
 
       <View style={styles.content}>
-        <Text style={styles.title}>GoalAchiever</Text>
+        <Text style={styles.title}>Systematic</Text>
         <Text style={styles.subtitle}>AI-Powered Goal Success</Text>
 
         <View style={styles.form}>
@@ -116,11 +118,12 @@ export default function LoginScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            onPress={handleDemo}
-            style={styles.demoButton}
+            onPress={handleContinueFree}
+            style={styles.freeButton}
           >
-            <Text style={styles.demoText}>Try Demo (no account needed)</Text>
+            <Text style={styles.freeText}>Continue for free (no account)</Text>
           </TouchableOpacity>
+
         </View>
       </View>
     </KeyboardAvoidingView>
@@ -157,7 +160,7 @@ function getStyles(colors: ColorPalette) {
     input: {
       borderWidth: 1,
       borderColor: colors.inputBorder,
-      borderRadius: 8,
+      borderRadius: 10,
       padding: 16,
       fontSize: 16,
       color: colors.text,
@@ -166,7 +169,7 @@ function getStyles(colors: ColorPalette) {
     button: {
       backgroundColor: colors.primary,
       padding: 16,
-      borderRadius: 8,
+      borderRadius: 12,
       alignItems: 'center',
       marginTop: 8,
     },
@@ -186,15 +189,18 @@ function getStyles(colors: ColorPalette) {
       color: colors.primary,
       fontSize: 14,
     },
-    demoButton: {
-      padding: 8,
+    freeButton: {
+      padding: 12,
       alignItems: 'center',
-      marginTop: 8,
+      marginTop: 4,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 8,
     },
-    demoText: {
-      color: colors.textSecondary,
-      fontSize: 14,
-      textDecorationLine: 'underline',
+    freeText: {
+      color: colors.text,
+      fontSize: 15,
+      fontWeight: '500',
     },
   });
 }

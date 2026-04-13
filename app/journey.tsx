@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,12 +11,12 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { format, isToday, isYesterday, isTomorrow, parseISO, addDays } from 'date-fns';
-import { supabase } from '../lib/supabase';
+import { getActiveGoal, getTasksForDateRange } from '../services/database/adapter';
 import { useGoalStore } from '../store/goalStore';
-import { useTheme } from '../contexts/ThemeContext';
+import { useThemedStyles } from '../hooks/useThemedStyles';
 import { ColorPalette } from '../constants/colors';
+import { ScreenHeader } from '../components/ScreenHeader';
 import { DailyTask } from '../types';
 
 
@@ -34,9 +34,7 @@ export default function JourneyScreen() {
   const [pageHeight, setPageHeight] = useState(0);
   const listRef = useRef<FlatList>(null);
 
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
-  const insets = useSafeAreaInsets();
+  const { styles, colors } = useThemedStyles(getStyles);
 
   const currentGoal = useGoalStore((state) => state.currentGoal);
   const roadmapPhases = useGoalStore((state) => state.roadmapPhases);
@@ -48,47 +46,42 @@ export default function JourneyScreen() {
   async function loadJourney() {
     setLoading(true);
     try {
+      // 1. Resolve the current goal — prefer store cache, fall back to adapter
       let goal = currentGoal;
-      let phases = roadmapPhases;
-
       if (!goal) {
-        const { data: goals } = await supabase
-          .from('goals')
-          .select('*')
-          .eq('status', 'active')
-          .limit(1);
-        if (!goals?.length) return;
-        goal = goals[0];
+        goal = await getActiveGoal();
+        if (!goal) return;
         useGoalStore.getState().setCurrentGoal(goal);
         await useGoalStore.getState().loadGoal(goal.id);
-        phases = useGoalStore.getState().roadmapPhases;
-      } else if (!phases.length) {
-        await useGoalStore.getState().loadGoal(goal.id);
-        phases = useGoalStore.getState().roadmapPhases;
       }
 
-      const startDate = phases[0]?.start_date ?? goal.created_at?.split('T')[0];
-      const endDate = phases[phases.length - 1]?.end_date ?? goal.target_date;
+      // 2. Resolve phases — only premium AI-generated goals have them
+      const phases = useGoalStore.getState().roadmapPhases;
+
+      // 3. Derive date range — prefer phase boundaries, fall back to goal dates
+      const startDate =
+        phases.length > 0
+          ? phases[0].start_date
+          : goal.created_at?.split('T')[0] ?? format(new Date(), 'yyyy-MM-dd');
+
+      const endDate =
+        phases.length > 0
+          ? phases[phases.length - 1].end_date
+          : goal.target_date;
+
       if (!startDate || !endDate) return;
 
-      const { data: tasks } = await supabase
-        .from('daily_tasks')
-        .select('*')
-        .eq('goal_id', goal.id)
-        .gte('scheduled_date', startDate)
-        .lte('scheduled_date', endDate)
-        .order('scheduled_date')
-        .order('priority', { ascending: false });
+      // 4. Load tasks via adapter (SQLite for free, Supabase for premium)
+      const tasks = await getTasksForDateRange(goal.id, startDate, endDate);
 
-      if (!tasks) return;
-
+      // 5. Group by date
       const grouped: Record<string, DailyTask[]> = {};
-      for (const task of tasks as DailyTask[]) {
+      for (const task of tasks) {
         if (!grouped[task.scheduled_date]) grouped[task.scheduled_date] = [];
         grouped[task.scheduled_date].push(task);
       }
 
-      // Build a page for every calendar day in the range, not just days with tasks
+      // 6. Build one page per calendar day in the range
       const built: DayPage[] = [];
       let cursor = parseISO(startDate);
       const end = parseISO(endDate);
@@ -106,14 +99,11 @@ export default function JourneyScreen() {
 
       setPages(built);
 
-      // Scroll to today's page
+      // 7. Scroll to today
       const todayIndex = built.findIndex((p) => p.isToday);
       if (todayIndex !== -1) {
         setTimeout(() => {
-          listRef.current?.scrollToIndex({
-            index: todayIndex,
-            animated: false,
-          });
+          listRef.current?.scrollToIndex({ index: todayIndex, animated: false });
         }, 300);
       }
     } finally {
@@ -209,16 +199,7 @@ export default function JourneyScreen() {
     <View style={styles.container}>
       <StatusBar style={colors.statusBar} />
 
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Ionicons name="arrow-back" size={24} color={colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Journey</Text>
-        <View style={{ width: 24 }} />
-      </View>
+      <ScreenHeader title="Journey" />
 
       <FlatList
         ref={listRef}
@@ -255,26 +236,9 @@ function getStyles(colors: ColorPalette) {
       color: colors.textSecondary,
     },
 
-    // ── App header ────────────────────────────────────────────────────────────
-    header: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: 16,
-      paddingBottom: 14,
-      backgroundColor: colors.surface,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.border,
-    },
-    headerTitle: {
-      fontSize: 18,
-      fontWeight: '700',
-      color: colors.text,
-    },
-
     // ── Full-screen day page ──────────────────────────────────────────────────
     page: {
-      paddingHorizontal: 16,
+      paddingHorizontal: 20,
     },
     dayHeader: {
       flexDirection: 'row',

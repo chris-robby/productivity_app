@@ -19,9 +19,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { useGoalStore } from '../store/goalStore';
+import { useTier } from '../store/tierStore';
 import { regenerateRoadmap } from '../services/aiService';
 import { format } from 'date-fns';
-import { useTheme } from '../contexts/ThemeContext';
+import { useThemedStyles } from '../hooks/useThemedStyles';
 import { ColorPalette } from '../constants/colors';
 import { RoadmapPhase } from '../types';
 
@@ -53,13 +54,13 @@ export default function RoadmapPreviewScreen() {
   const isReeval = reeval === 'true';
   const router = useRouter();
   const navigation = useNavigation();
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const { styles, colors } = useThemedStyles(getStyles);
   const insets = useSafeAreaInsets();
 
   const currentGoal = useGoalStore((state) => state.currentGoal);
   const roadmapPhases = useGoalStore((state) => state.roadmapPhases);
   const loadGoal = useGoalStore((state) => state.loadGoal);
+  const { isPremium } = useTier();
 
   const [loading, setLoading] = useState(true);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -127,6 +128,10 @@ export default function RoadmapPreviewScreen() {
 
   async function handleRegenerate() {
     if (!currentGoal || !goalId) return;
+    if (!isPremium) {
+      Alert.alert('Premium Feature', 'Regenerating your roadmap is available on the premium plan.');
+      return;
+    }
     setRegenerating(true);
     try {
       await regenerateRoadmap({
@@ -173,7 +178,7 @@ export default function RoadmapPreviewScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <StatusBar style="light" />
+      <StatusBar style={colors.statusBar} />
 
       {/* Progress dots */}
       <View style={styles.dots}>
@@ -183,7 +188,7 @@ export default function RoadmapPreviewScreen() {
           const isPast = i < currentIndex;
           return (
             <View
-              key={i}
+              key={`dot-${i}`}
               style={[
                 styles.dot,
                 isPast && styles.dotPast,
@@ -353,7 +358,7 @@ function PhaseCard({
           <View style={pcStyles.weeks}>
             <Text style={[pcStyles.weeksLabel, { color: palette.accent }]}>WEEKLY FOCUS</Text>
             {phase.milestones.filter(w => w && w.focus).map((week, i) => (
-              <View key={i} style={pcStyles.weekRow}>
+              <View key={week.weekNumber ?? i} style={pcStyles.weekRow}>
                 <View style={[pcStyles.weekDot, { backgroundColor: palette.accent }]} />
                 <View style={pcStyles.weekText}>
                   <Text style={[pcStyles.weekFocus, { color: palette.text }]}>
@@ -477,7 +482,7 @@ function ResultsCard({ goal, phases }: { goal: any; phases: RoadmapPhase[] }) {
         <Text style={[rcStyles.outcomesTitle, { color: GOLD.accent }]}>WHAT YOU'LL COMPLETE</Text>
 
         {phases.map((phase, i) => (
-          <View key={i} style={rcStyles.outcomeRow}>
+          <View key={phase.phase_title ?? i} style={rcStyles.outcomeRow}>
             <View style={[rcStyles.check, { backgroundColor: GOLD.accent }]}>
               <Text style={rcStyles.checkText}>✓</Text>
             </View>

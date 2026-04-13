@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -13,7 +13,8 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useConversationStore } from '../store/conversationStore';
-import { useTheme } from '../contexts/ThemeContext';
+import { useTier } from '../store/tierStore';
+import { useThemedStyles } from '../hooks/useThemedStyles';
 import { ColorPalette } from '../constants/colors';
 
 export default function GoalSetupScreen() {
@@ -23,15 +24,17 @@ export default function GoalSetupScreen() {
   const insets = useSafeAreaInsets();
   const setGoalTextInStore = useConversationStore((state) => state.setGoalText);
   const reset = useConversationStore((state) => state.reset);
+  const { isFree } = useTier();
 
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const { styles, colors } = useThemedStyles(getStyles);
 
   function handleStart() {
     if (!goalText.trim()) return;
     reset();
     setGoalTextInStore(goalText.trim());
-    router.push('/habit-setup');
+    // Free users → manual habit-setup flow
+    // Premium users → AI conversation flow
+    router.push(isFree ? '/habit-setup' : '/conversation');
   }
 
   return (
@@ -95,7 +98,7 @@ function getStyles(colors: ColorPalette) {
     },
     center: {
       flex: 1,
-      paddingHorizontal: 28,
+      paddingHorizontal: 20,
       justifyContent: 'center',
       paddingBottom: 40,
     },
@@ -132,6 +135,7 @@ function getStyles(colors: ColorPalette) {
       backgroundColor: colors.primary,
       paddingVertical: 15,
       paddingHorizontal: 28,
+      borderRadius: 12,
     },
     btnDisabled: {
       opacity: 0.35,

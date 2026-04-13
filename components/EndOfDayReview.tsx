@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { DailyTask } from '../types';
 import { useTaskStore } from '../store/taskStore';
-import { useTheme } from '../contexts/ThemeContext';
+import { useThemedStyles } from '../hooks/useThemedStyles';
 import { ColorPalette } from '../constants/colors';
 
 interface EndOfDayReviewProps {
@@ -39,8 +39,7 @@ export function EndOfDayReview({
   const [selectedReason, setSelectedReason] = useState<string>('');
   const [customReason, setCustomReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const { styles, colors } = useThemedStyles(getStyles);
 
   const submitFailureReason = useTaskStore((state) => state.submitFailureReason);
 

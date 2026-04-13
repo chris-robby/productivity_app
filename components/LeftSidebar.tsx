@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useTheme } from '../contexts/ThemeContext';
+import { useThemedStyles } from '../hooks/useThemedStyles';
 import { ColorPalette } from '../constants/colors';
 
 const SIDEBAR_WIDTH = Math.min(Dimensions.get('window').width * 0.75, 300);
@@ -39,8 +39,7 @@ export function LeftSidebar({ visible, onClose }: LeftSidebarProps) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const router = useRouter();
 
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const { styles, colors } = useThemedStyles(getStyles);
   const insets = useSafeAreaInsets();
 
   useEffect(() => {

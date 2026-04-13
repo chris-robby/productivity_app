@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -11,8 +11,9 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
+import { useTierStore } from '../../store/tierStore';
 import { StatusBar } from 'expo-status-bar';
-import { useTheme } from '../../contexts/ThemeContext';
+import { useThemedStyles } from '../../hooks/useThemedStyles';
 import { ColorPalette } from '../../constants/colors';
 
 export default function SignupScreen() {
@@ -21,8 +22,8 @@ export default function SignupScreen() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const setTier = useTierStore((s) => s.setTier);
+  const { styles, colors } = useThemedStyles(getStyles);
 
   async function handleSignup() {
     if (!email || !password || !confirmPassword) {
@@ -43,23 +44,24 @@ export default function SignupScreen() {
     setLoading(true);
 
     try {
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
       });
 
       if (error) throw error;
 
-      Alert.alert(
-        'Success!',
-        'Account created successfully. Please check your email to verify your account.',
-        [
-          {
-            text: 'OK',
-            onPress: () => router.replace('/auth/login'),
-          },
-        ]
-      );
+      if (data.session) {
+        // Email auto-confirmed — user is already authenticated
+        await setTier('premium');
+        router.replace('/(tabs)');
+      } else {
+        Alert.alert(
+          'Check your email',
+          'We sent you a verification link. Sign in once confirmed.',
+          [{ text: 'OK', onPress: () => router.replace('/auth/login') }]
+        );
+      }
     } catch (error: any) {
       Alert.alert('Signup Error', error.message);
     } finally {
@@ -161,7 +163,7 @@ function getStyles(colors: ColorPalette) {
     input: {
       borderWidth: 1,
       borderColor: colors.inputBorder,
-      borderRadius: 8,
+      borderRadius: 10,
       padding: 16,
       fontSize: 16,
       color: colors.text,
@@ -170,7 +172,7 @@ function getStyles(colors: ColorPalette) {
     button: {
       backgroundColor: colors.primary,
       padding: 16,
-      borderRadius: 8,
+      borderRadius: 12,
       alignItems: 'center',
       marginTop: 8,
     },

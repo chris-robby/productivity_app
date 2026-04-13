@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -9,23 +9,23 @@ import {
   Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { addDays, format, eachDayOfInterval } from 'date-fns';
+import { addDays, format } from 'date-fns';
 import { useConversationStore } from '../store/conversationStore';
-import { useTheme } from '../contexts/ThemeContext';
+import { useThemedStyles } from '../hooks/useThemedStyles';
 import { ColorPalette } from '../constants/colors';
 import { ScreenFooter } from '../components/ScreenFooter';
-import { DAY_LABELS, ALL_DAYS, formatDays } from '../constants/days';
-import { supabase } from '../lib/supabase';
+import { formatDays } from '../constants/days';
+import { saveGoalWithHabits } from '../services/database/adapter';
 
 export default function JourneyPreviewScreen() {
   const [saving, setSaving] = useState(false);
 
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const { styles, colors } = useThemedStyles(getStyles);
 
   const goalText = useConversationStore((s) => s.goalText);
   const userContext = useConversationStore((s) => s.userContext);
@@ -37,66 +37,12 @@ export default function JourneyPreviewScreen() {
   async function handleStart() {
     setSaving(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Not authenticated');
-
-      const startDate = new Date();
-
-      // 1. Save goal
-      const { data: goal, error: goalErr } = await supabase
-        .from('goals')
-        .insert({
-          user_id: user.id,
-          goal_text: goalText,
-          timeline_months: timelineMonths,
-          target_date: format(targetDate, 'yyyy-MM-dd'),
-          status: 'active',
-          initial_conversation: {},
-          user_context: userContext || null,
-        })
-        .select()
-        .single();
-
-      if (goalErr || !goal) throw goalErr ?? new Error('Failed to save goal');
-
-      // 2. Save habits
-      const { error: habitErr } = await supabase.from('habits').insert(
-        tasks.map((t) => ({
-          goal_id: goal.id,
-          user_id: user.id,
-          habit_text: t.text.trim(),
-          frequency: 'custom',
-          frequency_days: t.days.length,
-        }))
-      );
-      if (habitErr) throw habitErr;
-
-      // 3. Pre-generate daily_tasks for the next 30 days
-      const days = eachDayOfInterval({ start: startDate, end: addDays(startDate, 29) });
-      const taskRows: object[] = [];
-
-      for (const day of days) {
-        const dow = day.getDay();
-        for (const task of tasks) {
-          if (task.days.includes(dow)) {
-            taskRows.push({
-              goal_id: goal.id,
-              task_title: task.text.trim(),
-              scheduled_date: format(day, 'yyyy-MM-dd'),
-              estimated_minutes: 0,
-              priority: 'medium',
-              completed: false,
-              failed: false,
-            });
-          }
-        }
-      }
-
-      if (taskRows.length > 0) {
-        const { error: tasksErr } = await supabase.from('daily_tasks').insert(taskRows);
-        if (tasksErr) throw tasksErr;
-      }
-
+      await saveGoalWithHabits({
+        goalText,
+        timelineMonths,
+        userContext,
+        tasks: tasks.map((t) => ({ text: t.text, days: t.days })),
+      });
       router.replace('/(tabs)');
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Something went wrong. Please try again.');
@@ -144,7 +90,10 @@ export default function JourneyPreviewScreen() {
           {saving ? (
             <ActivityIndicator size="small" color={colors.textOnPrimary} />
           ) : (
-            <Text style={styles.startBtnText}>Start Tracking →</Text>
+            <>
+              <Text style={styles.startBtnText}>Start Tracking</Text>
+              <Ionicons name="arrow-forward" size={16} color={colors.textOnPrimary} />
+            </>
           )}
         </TouchableOpacity>
       </ScreenFooter>
@@ -156,7 +105,7 @@ function getStyles(colors: ColorPalette) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     scroll: { flex: 1 },
-    scrollInner: { paddingHorizontal: 24 },
+    scrollInner: { paddingHorizontal: 20 },
 
     heading: {
       fontSize: 28,
@@ -204,12 +153,15 @@ function getStyles(colors: ColorPalette) {
     },
 
     startBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      justifyContent: 'center',
       backgroundColor: colors.primary,
       paddingHorizontal: 24,
       paddingVertical: 14,
       borderRadius: 12,
       minWidth: 160,
-      alignItems: 'center',
     },
     startBtnDisabled: { opacity: 0.5 },
     startBtnText: { color: colors.textOnPrimary, fontSize: 16, fontWeight: '600' },
